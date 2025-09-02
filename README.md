@@ -1,6 +1,6 @@
 # lapiogaming/debian-vm
 
-Debian VM running inside Docker (custom edition by **lapiogamer**).
+A Dockerized Debian VM image running with QEMU.
 
 ## Build
 
