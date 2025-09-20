@@ -6,12 +6,12 @@ echo "  IDX VPS Setup / Ubuntu VNC Script"
 echo "===================================="
 
 echo "Choose an option:"
-echo "1) Prepare files for root access + VM setup"
+echo "1) Run script.sh with dev.nix setup"
 echo "2) Run Ubuntu VNC Docker container"
 read -p "Enter option (1 or 2): " choice
 
 # ------------------------------
-# Option 1: Prepare files for root access
+# Option 1: Setup .idx and run script.sh
 # ------------------------------
 if [[ "$choice" == "1" ]]; then
     echo "🔄 Setting up .idx folder and downloading files..."
@@ -29,15 +29,9 @@ if [[ "$choice" == "1" ]]; then
     chmod +x "$HOME/script.sh"
     echo "✅ script.sh downloaded to $HOME and made executable"
 
-    # Inform user to run script.sh after root access
-    echo
-    echo "===================================="
-    echo "✅ Preparation complete!"
-    echo "Next steps:"
-    echo "1) Gain root access on your IDX VPS."
-    echo "2) Run the VM setup script manually:"
-    echo "   bash ~/script.sh"
-    echo "===================================="
+    # Run the script automatically
+    echo "🚀 Running script.sh..."
+    bash "$HOME/script.sh"
 
 # ------------------------------
 # Option 2: Docker Ubuntu VNC
