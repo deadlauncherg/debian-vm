@@ -13,7 +13,7 @@ if [[ "$choice" == "1" ]]; then
     # Option 1: Root + VM
     echo "🔄 Replacing dev.nix with modded version..."
     mkdir -p ~/.config/nixpkgs
-    cp ./modded_dev.nix ~/.config/nixpkgs/dev.nix || { echo "Error: dev.nix missing!"; exit 1; }
+    cp ./dev.nix ~/.config/nixpkgs/dev.nix || { echo "Error: dev.nix missing!"; exit 1; }
 
     echo "🚀 Running VM setup..."
     bash ./script.sh
