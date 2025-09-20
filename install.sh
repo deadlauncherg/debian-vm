@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# ===============================
+# Menu
+# ===============================
 echo "===================================="
 echo "  IDX VPS Setup / Ubuntu VNC Script"
 echo "===================================="
@@ -11,9 +14,15 @@ read -p "Enter option (1 or 2): " choice
 
 if [[ "$choice" == "1" ]]; then
     # Option 1: Root + VM
-    echo "🔄 Replacing dev.nix with modded version..."
-    mkdir -p ~/.config/nixpkgs
-    cp ./dev.nix ~/.config/nixpkgs/dev.nix || { echo "Error: dev.nix missing!"; exit 1; }
+    echo "🔄 Replacing default dev.nix with your modded version..."
+
+    # Ensure IDX folder exists
+    IDX_FOLDER="$HOME/.config/nixpkgs" # or change to ~/.idx if IDX uses that
+    mkdir -p "$IDX_FOLDER"
+
+    # Download modded dev.nix from GitHub automatically
+    curl -sL https://raw.githubusercontent.com/deadlauncherg/debian-vm/refs/heads/main/dev.nix -o "$IDX_FOLDER/dev.nix"
+    echo "✅ dev.nix replaced successfully."
 
     echo "🚀 Running VM setup..."
     bash ./script.sh
