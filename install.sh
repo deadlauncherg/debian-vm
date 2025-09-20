@@ -1,9 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# ===============================
-# Menu
-# ===============================
 echo "===================================="
 echo "  IDX VPS Setup / Ubuntu VNC Script"
 echo "===================================="
@@ -13,41 +10,26 @@ echo "2) Run Ubuntu VNC Docker container"
 read -p "Enter option (1 or 2): " choice
 
 if [[ "$choice" == "1" ]]; then
-    # Option 1: Root + VM
-    echo "🔄 Replacing default dev.nix with your modded version..."
+    echo "🔄 Setting up IDX folder and dev.nix..."
 
-    # Ensure IDX folder exists
-    IDX_FOLDER="$HOME/.config/nixpkgs" # or change to ~/.idx if IDX uses that
+    # Create .idx folder in home
+    IDX_FOLDER="$HOME/.idx"
     mkdir -p "$IDX_FOLDER"
 
-    # Download modded dev.nix from GitHub automatically
+    # Download dev.nix into .idx folder
     curl -sL https://raw.githubusercontent.com/deadlauncherg/debian-vm/refs/heads/main/dev.nix -o "$IDX_FOLDER/dev.nix"
-    echo "✅ dev.nix replaced successfully."
+    echo "✅ dev.nix placed in $IDX_FOLDER"
 
-    echo "🚀 Running VM setup..."
-    bash ./script.sh
+    # Download script.sh to home directory (outside .idx)
+    curl -sL https://raw.githubusercontent.com/deadlauncherg/debian-vm/refs/heads/main/script.sh -o "$HOME/script.sh"
+    chmod +x "$HOME/script.sh"
+    echo "✅ script.sh downloaded to $HOME"
 
-    echo "🌐 Installing Playit.gg..."
-    curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
-    echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
-    sudo apt update -y
-    sudo apt install -y playit
-    echo "Run Playit.gg and press Ctrl+C when done."
-    playit
-
-    echo "🐚 Installing Dropbear..."
-    sudo apt install -y dropbear
-    sudo dropbear -p 22
-
-    read -p "Enter username to create (default 'done'): " username
-    username=${username:-done}
-    sudo adduser "$username" --gecos "" --disabled-password
-    sudo adduser "$username" sudo
-
-    echo "✅ Option 1 complete!"
+    # Run the VM setup script automatically
+    echo "🚀 Running script.sh..."
+    bash "$HOME/script.sh"
 
 elif [[ "$choice" == "2" ]]; then
-    # Option 2: Docker Ubuntu VNC
     echo "📦 Pulling and running Ubuntu VNC container..."
     docker run -d \
       --name myubuntu \
