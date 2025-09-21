@@ -1,34 +1,89 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "===================================="
-echo "       IDX VPS Setup Menu"
-echo "===================================="
+# =======================================
+# Rainbow banner for Lapiogamer
+# =======================================
+rainbow() {
+  text=$1
+  colors=(31 33 32 36 34 35)
+  i=0
+  for (( c=0; c<${#text}; c++ )); do
+    printf "\033[1;${colors[i]}m${text:$c:1}\033[0m"
+    i=$(( (i+1) % ${#colors[@]} ))
+  done
+  echo
+}
+
+clear
+rainbow "================================================"
+rainbow "        WELCOME TO Lapiogamer Auto Setup        "
+rainbow "================================================"
 echo
+
+# =======================================
+# Menu
+# =======================================
 echo "Choose an option:"
-echo "1) Create script.sh + dev.nix and run VM"
-echo "2) Run Ubuntu VNC Docker container"
+echo "  1) Setup IDX VM (dev.nix + script.sh)"
+echo "  2) Run Ubuntu VNC Docker"
+echo "  0) Exit"
 echo
+read -p "Enter choice: " choice
 
-read -p "Enter option (1 or 2): " choice
+# =======================================
+# Option 1 → create .idx/dev.nix + script.sh
+# =======================================
+if [ "$choice" = "1" ]; then
+  echo "[INFO] Creating .idx folder and dev.nix..."
+  mkdir -p "$HOME/.idx"
 
-if [[ "$choice" == "1" ]]; then
-    echo "🔄 Creating .idx folder and dev.nix..."
-    IDX_FOLDER="$HOME/.idx"
-    mkdir -p "$IDX_FOLDER"
+  cat > "$HOME/.idx/dev.nix" <<'EOF'
+{ pkgs, ... }: {
+  channel = "stable-24.05";
+  packages = [
+    pkgs.git
+    pkgs.curl
+    pkgs.wget
+    pkgs.unzip
+    pkgs.openssh
+    pkgs.sudo
+    pkgs.qemu_kvm
+    pkgs.cloud-utils
+  ];
+  env = {
+    DEBIAN_FRONTEND = "noninteractive";
+  };
+  idx = {
+    extensions = [
+      "ms-vscode.remote-ssh"
+      "ms-vscode.cpptools"
+      "ms-python.python"
+    ];
+    workspace = {
+      onCreate = {
+        setup = ''
+          echo "🔄 Preparing lightweight environment..."
+          sudo apt-get update -y || true
+          echo "✅ Base IDX environment ready"
+        '';
+      };
+      onStart = {
+        refresh = ''
+          echo "🔁 Refreshing environment..."
+          sudo apt-get update -y || true
+        '';
+      };
+    };
+    previews = { enable = false; };
+  };
+}
+EOF
 
-    # Fetch dev.nix into .idx
-    curl -sL https://raw.githubusercontent.com/deadlauncherg/debian-vm/refs/heads/main/dev.nix -o "$IDX_FOLDER/dev.nix"
-    echo "✅ dev.nix placed in $IDX_FOLDER"
-
-    echo "📝 Writing script.sh..."
-    cat > "$HOME/script.sh" <<"EOF"
+  echo "[INFO] Creating script.sh..."
+  cat > "$HOME/script.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
-
-# =============================
-# Debian 11 VM (Auto-detect Image Format)
-# =============================
 
 clear
 cat << "BANNER"
@@ -43,13 +98,10 @@ cat << "BANNER"
 ================================================
 BANNER
 
-# =============================
-# Configurable Variables
-# =============================
 VM_DIR="$HOME/vm"
 IMG_FILE="$VM_DIR/debian-cloud.qcow2"
 SEED_FILE="$VM_DIR/seed.iso"
-MEMORY=2048   # safe for IDX
+MEMORY=2048
 CPUS=2
 SSH_PORT=24
 DISK_SIZE=10G
@@ -57,9 +109,6 @@ DISK_SIZE=10G
 mkdir -p "$VM_DIR"
 cd "$VM_DIR"
 
-# =============================
-# VM Image Setup
-# =============================
 if [ ! -f "$IMG_FILE" ]; then
     echo "[INFO] Downloading Debian 11 cloud image..."
     wget -q https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2 -O "$VM_DIR/debian-cloud.raw"
@@ -78,8 +127,7 @@ if [ ! -f "$IMG_FILE" ]; then
     echo "[INFO] Resizing image to $DISK_SIZE..."
     qemu-img resize "$IMG_FILE" "$DISK_SIZE"
 
-    # Cloud-init config with hostname = debian11
-    cat > user-data <<EOF2
+    cat > user-data <<CLOUD
 #cloud-config
 hostname: debian11
 manage_etc_hosts: true
@@ -102,12 +150,12 @@ runcmd:
  - apt-get install -y sudo curl unzip git wget htop lsof
  - sed -ri "s/^#?PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config
  - systemctl restart ssh
-EOF2
+CLOUD
 
-    cat > meta-data <<EOF2
+    cat > meta-data <<CLOUD
 instance-id: iid-local01
 local-hostname: debian11
-EOF2
+CLOUD
 
     cloud-localds "$SEED_FILE" user-data meta-data
     echo "[INFO] VM setup complete!"
@@ -115,16 +163,12 @@ else
     echo "[INFO] VM image found, skipping setup..."
 fi
 
-# =============================
-# Start VM
-# =============================
 echo "[INFO] Starting VM..."
-
 KVM_OPTS=""
 if [ -e /dev/kvm ]; then
     KVM_OPTS="-enable-kvm -cpu host"
 else
-    echo "[WARN] KVM not available, running in emulation mode (slower)."
+    echo "[WARN] KVM not available, running in emulation mode."
     KVM_OPTS="-cpu max"
 fi
 
@@ -140,29 +184,25 @@ exec qemu-system-x86_64 \
     -nographic -serial mon:stdio
 EOF
 
-    chmod +x "$HOME/script.sh"
-    echo "✅ script.sh created at $HOME/script.sh"
+  chmod +x "$HOME/script.sh"
+  echo "[INFO] Running script.sh..."
+  bash "$HOME/script.sh"
 
-    echo "🚀 Running script.sh..."
-    bash "$HOME/script.sh"
+# =======================================
+# Option 2 → run Docker Ubuntu VNC
+# =======================================
+elif [ "$choice" = "2" ]; then
+  docker run -d \
+    --name myubuntu \
+    -p 6080:6080 \
+    -p 5901:5901 \
+    -v ubuntu_data:/root \
+    lapiogamer/ubuntu-vnc
 
-elif [[ "$choice" == "2" ]]; then
-    echo "📦 Pulling and running Ubuntu VNC container..."
-    docker run -d \
-      --name myubuntu \
-      -p 6080:6080 \
-      -p 5901:5901 \
-      -v ubuntu_data:/root \
-      lapiogamer/ubuntu-vnc
-    echo "✅ Docker container started!"
-    echo "   Access VNC on ports 6080 (web) / 5901 (VNC client)"
-
+# =======================================
+# Exit
+# =======================================
 else
-    echo "❌ Invalid option! Please enter 1 or 2."
-    exit 1
+  echo "[INFO] Exiting..."
+  exit 0
 fi
-
-echo
-echo "===================================="
-echo "      Script execution finished"
-echo "===================================="
