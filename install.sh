@@ -28,7 +28,7 @@ echo "Choose an option:"
 echo "  1) Setup IDX VM (dev.nix + script.sh)"
 echo "  2) Run Ubuntu VNC Docker"
 echo "  3) Install Pterodactyl Panel + Node"
-echo "  4) Install Playit VPN"
+echo "  4) Install Playit"
 echo "  0) Exit"
 echo
 read -p "Enter choice: " choice
@@ -220,10 +220,10 @@ elif [ "$choice" = "3" ]; then
   bash <(curl -s https://pterodactyl-installer.se)
 
 # =======================================
-# Option 4 → Install Playit VPN
+# Option 4 → Install Playit 
 # =======================================
 elif [ "$choice" = "4" ]; then
-  echo "[INFO] Installing Playit VPN..."
+  echo "[INFO] Installing Playit..."
   sudo apt update && sudo apt install -y curl gnupg
   curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
   echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
