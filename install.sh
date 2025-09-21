@@ -192,6 +192,20 @@ EOF
 # Option 2 → run Docker Ubuntu VNC
 # =======================================
 elif [ "$choice" = "2" ]; then
+  echo "[INFO] Installing Docker if not present..."
+  
+  # Update package index
+  sudo apt-get update -y
+
+  # Install docker.io if not already installed
+  if ! command -v docker &> /dev/null; then
+    sudo apt-get install -y docker.io
+    echo "[INFO] Docker installed successfully."
+  else
+    echo "[INFO] Docker already installed."
+  fi
+
+  # Run Docker container
   docker run -d \
     --name myubuntu \
     -p 6080:6080 \
