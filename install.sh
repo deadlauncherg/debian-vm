@@ -17,7 +17,7 @@ rainbow() {
 
 clear
 rainbow "================================================"
-rainbow "    WELCOME TO Lapiogamer Auto Setup                                                "
+rainbow "    WELCOME TO Lapiogamer Auto Setup"
 rainbow "================================================"
 echo
 
@@ -27,6 +27,7 @@ echo
 echo "Choose an option:"
 echo "  1) Setup IDX VM (dev.nix + script.sh)"
 echo "  2) Run Ubuntu VNC Docker"
+echo "  3) Install Pterodactyl Panel + Node"
 echo "  0) Exit"
 echo
 read -p "Enter choice: " choice
@@ -193,25 +194,29 @@ EOF
 # =======================================
 elif [ "$choice" = "2" ]; then
   echo "[INFO] Installing Docker if not present..."
-  
-  # Update package index
   sudo apt-get update -y
-
-  # Install docker.io if not already installed
   if ! command -v docker &> /dev/null; then
     sudo apt-get install -y docker.io
-    echo "[INFO] Docker installed successfully."
+    sudo systemctl enable --now docker
+    sudo usermod -aG docker $USER
+    echo "[INFO] Docker installed and service started."
   else
     echo "[INFO] Docker already installed."
   fi
 
-  # Run Docker container
   docker run -d \
     --name myubuntu \
     -p 6080:6080 \
     -p 5901:5901 \
     -v ubuntu_data:/root \
     lapiogamer/ubuntu-vnc
+
+# =======================================
+# Option 3 → Install Pterodactyl Panel + Node
+# =======================================
+elif [ "$choice" = "3" ]; then
+  echo "[INFO] Installing Pterodactyl Panel + Node..."
+  bash <(curl -s https://pterodactyl-installer.se)
 
 # =======================================
 # Exit
