@@ -258,7 +258,7 @@ elif [ "$choice" = "5" ]; then
     cd Hosting-panel || exit
 
     # Show message to update settings.json
-    echo "⚠️  Make sure to update your settings.json before running (node)."
+    echo "⚠️  Make sure to update your settings.json before running (node .)."
 
     # Run npm install
     npm install
