@@ -258,18 +258,29 @@ elif [ "$choice" = "5" ]; then
     cd Hosting-panel || exit
 
     # Show message to update settings.json
-    echo "⚠️  Make sure to update your settings.json before running (node.)."
-    
+    echo "⚠️  Make sure to update your settings.json before running (node)."
+
     # Run npm install
     npm install
 
     # Optionally open settings.json (uncomment if needed)
     # nano settings.json
 
-    echo "[INFO] Feastic Theme setup done! Add your watermark below:"
-    echo "YOUR NAME HERE"   # <-- leave space to add your watermark
-fi
+    echo "[INFO] Feastic Theme setup done!"
+    echo "Here is your custom banner:"
 
+    # Multi-line ASCII banner
+    cat << "BANNER"
+  _                _          ____                           
+ | |    __ _ _ __ (_) ___    / ___| __ _ _ __ ___   ___ _ __ 
+ | |   / _` | '_ \| |/ _ \  | |  _ / _` | '_ ` _ \ / _ \ '__|
+ | |__| (_| | |_) | | (_) | | |_| | (_| | | | | | |  __/ |   
+ |_____\__,_| .__/|_|\___/   \____|\__,_|_| |_| |_|\___|_|   
+            |_|                                              
+BANNER
+
+  fi
+  
 # =======================================
 # Exit
 # =======================================
