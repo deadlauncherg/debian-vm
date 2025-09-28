@@ -249,20 +249,18 @@ elif [ "$choice" = "5" ]; then
     echo "[INFO] You selected Feastic Theme."
     echo "Make sure to update your settings.json before running."
     sleep 2
+
+    # Remove old folder if exists
+    if [ -d "Hosting-panel" ]; then
+        echo "[INFO] Removing existing Hosting-panel folder..."
+        rm -rf Hosting-panel
+    fi
+
     git clone https://github.com/deadlauncherg/Hosting-panel.git
     cd Hosting-panel || exit
     npm install
     nano settings.json
-
-  elif [ "$theme_choice" = "2" ]; then
-    echo "[INFO] Option coming soon."
-  elif [ "$theme_choice" = "3" ]; then
-    echo "[INFO] Option coming soon."
-  elif [ "$theme_choice" = "4" ]; then
-    echo "[INFO] Option coming soon."
-  else
-    echo "[INFO] Returning to main menu."
-  fi
+fi
 
 # =======================================
 # Exit
