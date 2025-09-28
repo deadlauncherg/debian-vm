@@ -247,19 +247,27 @@ elif [ "$choice" = "5" ]; then
 
   if [ "$theme_choice" = "1" ]; then
     echo "[INFO] You selected Feastic Theme."
-    echo "Make sure to update your settings.json before running."
-    sleep 2
-
-    # Remove old folder if exists
+    
+    # Remove existing folder if exists
     if [ -d "Hosting-panel" ]; then
-        echo "[INFO] Removing existing Hosting-panel folder..."
         rm -rf Hosting-panel
     fi
 
+    # Clone repo first
     git clone https://github.com/deadlauncherg/Hosting-panel.git
     cd Hosting-panel || exit
+
+    # Show message to update settings.json
+    echo "⚠️  Make sure to update your settings.json before running."
+    
+    # Run npm install
     npm install
-    nano settings.json
+
+    # Optionally open settings.json (uncomment if needed)
+    # nano settings.json
+
+    echo "[INFO] Feastic Theme setup done! Add your watermark below:"
+    echo "YOUR NAME HERE"   # <-- leave space to add your watermark
 fi
 
 # =======================================
