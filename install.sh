@@ -260,22 +260,32 @@ elif [ "$choice" = "5" ]; then
     # Show message to update settings.json
     echo "⚠️  Make sure to update your settings.json before running (node .)."
 
-    #Run curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+    #Run nvm installer
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 
-    #Run sudo apt install -y nodejs
+    #Run nvm exporter
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+    #Run Reload source
+    source ~/.bashrc
+
+    #Run nvm cmds
+    nvm install 18
+    nvm use 18
+    nvm alias default 18
+    
+    #Run node.js latest
     sudo apt install -y nodejs
 
+    #Run verify nvm version
+    node -v
+    npm -v
+    
     #Run sudo apt update
     sudo apt update
 
-    #Run npm --version
-    npm --version
-
-    # Run apt install npm
-    apt install npm
-    
-    # Run npm install
+    #Run npm install
     npm install
 
     # Optionally open settings.json (uncomment if needed)
