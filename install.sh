@@ -275,9 +275,6 @@ elif [ "$choice" = "5" ]; then
     nvm use 18
     nvm alias default 18
     
-    #Run node.js latest
-    sudo apt install -y nodejs
-
     #Run verify nvm version
     node -v
     npm -v
