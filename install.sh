@@ -260,6 +260,18 @@ elif [ "$choice" = "5" ]; then
     # Show message to update settings.json
     echo "⚠️  Make sure to update your settings.json before running (node .)."
 
+    #Run curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+    curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+
+    #Run sudo apt install -y nodejs
+    sudo apt install -y nodejs
+
+    #Run sudo apt update
+    sudo apt update
+
+    #Run npm --version
+    npm --version
+
     # Run apt install npm
     apt install npm
     
