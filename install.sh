@@ -260,6 +260,9 @@ elif [ "$choice" = "5" ]; then
     # Show message to update settings.json
     echo "⚠️  Make sure to update your settings.json before running (node .)."
 
+    # Run apt install npm
+    apt install npm
+    
     # Run npm install
     npm install
 
