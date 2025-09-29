@@ -279,6 +279,9 @@ elif [ "$choice" = "5" ]; then
     node -v
     npm -v
     
+    #Run apt install sudo
+    apt install sudo
+    
     #Run sudo apt update
     sudo apt update
 
