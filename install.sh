@@ -1,74 +1,75 @@
 #!/bin/bash
 set -euo pipefail
 
-# ============================
-# COLORS + EFFECTS
-# ============================
-RED="\e[31m"
-GRN="\e[32m"
-YLW="\e[33m"
-BLU="\e[34m"
-PRP="\e[35m"
-CYN="\e[36m"
+# =========================
+# COLORS
+# =========================
+RED="\e[31m"; GRN="\e[32m"; YLW="\e[33m"
+BLU="\e[34m"; PRP="\e[35m"; CYN="\e[36m"
 RST="\e[0m"
 
-glitch() {
-  text="$1"
-  for ((i=0; i<3; i++)); do
-    echo -e "${CYN}${text}${RST}"
-    sleep 0.05
-    echo -e "${PRP}${text}${RST}"
-    sleep 0.05
-  done
-}
-
-rainbow() {
-  text=$1
-  colors=(31 33 32 36 34 35)
-  i=0
-  for (( c=0; c<${#text}; c++ )); do
-    printf "\033[1;${colors[i]}m${text:$c:1}\033[0m"
-    i=$(( (i+1) % ${#colors[@]} ))
-  done
-  echo
-}
-
-banner() {
+# =========================
+# HEADER (PRO DASHBOARD)
+# =========================
+header() {
 clear
-rainbow "================================================"
-glitch "   🚀 LAPIOGAMER ADVANCED AUTO SETUP PANEL 🚀"
-rainbow "================================================"
-echo
+echo -e "${CYN}"
+cat << "EOF"
+╔══════════════════════════════════════════════╗
+║        🚀 LAPIOGAMER CONTROL PANEL 🚀        ║
+║     Advanced VM + Hosting Installer Suite    ║
+╚══════════════════════════════════════════════╝
+EOF
+echo -e "${RST}"
 }
 
-# ============================
-# DEP CHECK
-# ============================
-install_base() {
+# =========================
+# DEP INSTALLER
+# =========================
+base_install() {
+  echo -e "${YLW}[SYSTEM] Installing base dependencies...${RST}"
   sudo apt update -y
-  sudo apt install -y curl wget git unzip sudo qemu qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virt-manager qemu-utils cloud-image-utils
+  sudo apt install -y \
+    curl wget git unzip sudo \
+    qemu qemu-kvm qemu-utils \
+    libvirt-daemon-system libvirt-clients bridge-utils virt-manager \
+    cloud-image-utils
 }
 
-# ============================
-# OPTION 6 (NEW - KVM/QEMU FULL SETUP)
-# ============================
-kvm_fallback() {
+# =========================
+# VM DOCTOR MODE (OPTION 6)
+# =========================
+vm_doctor() {
 
-echo -e "${YLW}[INFO] Installing full KVM/QEMU stack...${RST}"
-install_base
+echo -e "${BLU}[VM DOCTOR] Checking system...${RST}"
 
-echo -e "${GRN}[INFO] Checking CPU virtualization support...${RST}"
-egrep -c '(vmx|svm)' /proc/cpuinfo || true
+base_install
 
-echo -e "${GRN}[INFO] Verifying cloud-localds...${RST}"
-which cloud-localds || true
-cloud-localds --version || true
+echo -e "${GRN}[CHECK] CPU Virtualization Support${RST}"
+if egrep -c '(vmx|svm)' /proc/cpuinfo >/dev/null; then
+  echo -e "${GRN}✔ CPU supports virtualization${RST}"
+else
+  echo -e "${YLW}⚠ CPU may NOT support virtualization${RST}"
+fi
 
+echo -e "${GRN}[CHECK] KVM Device${RST}"
+if [ -e /dev/kvm ]; then
+  echo -e "${GRN}✔ KVM AVAILABLE${RST}"
+  KVM_FLAG="-enable-kvm -cpu host"
+else
+  echo -e "${RED}✖ KVM NOT AVAILABLE → switching to TCG mode${RST}"
+  KVM_FLAG="-cpu max"
+fi
+
+echo -e "${GRN}[CHECK] cloud-localds${RST}"
+if ! command -v cloud-localds &>/dev/null; then
+  echo -e "${YLW}[FIX] Installing cloud-image-utils...${RST}"
+  sudo apt install -y cloud-image-utils
+fi
+
+echo -e "${GRN}[INFO] Preparing VM workspace${RST}"
 mkdir -p /root/vm
 cd /root/vm
-
-echo -e "${BLU}[INFO] Creating cloud-init ISO...${RST}"
-touch meta-data
 
 cat > user-data <<EOF
 #cloud-config
@@ -77,102 +78,91 @@ chpasswd: { expire: False }
 ssh_pwauth: true
 EOF
 
+echo "instance-id: vm-01" > meta-data
+
 cloud-localds seed.iso user-data meta-data
 
-ls -lh /root/vm/seed.iso
-
-echo -e "${PRP}[INFO] Starting QEMU VM (fallback mode)...${RST}"
+echo -e "${BLU}[INFO] Booting VM...${RST}"
 
 qemu-system-x86_64 \
-  -m 4096 \
+  $KVM_FLAG \
+  -m 2048 \
   -smp 2 \
-  -enable-kvm || true
+  -drive file=seed.iso,format=raw,if=virtio \
+  -nographic
 
 cd ~/debian-vm 2>/dev/null || true
 }
 
-# ============================
-# MENU
-# ============================
-banner
+# =========================
+# MENU UI (PROFESSIONAL)
+# =========================
+menu() {
+header
 
-echo -e "${CYN}Choose an option:${RST}"
-echo "  1) Setup IDX VM (dev.nix + script.sh)"
-echo "  2) Run Ubuntu VNC Docker"
-echo "  3) Install Pterodactyl Panel + Node"
-echo "  4) Install Playit"
-echo "  5) ChunkDash Panel"
-echo "  6) 🧠 KVM/QEMU Fallback Mode (AUTO FIX VM)"
-echo "  0) Exit"
+echo -e "${PRP}┌────────────────────────────────────────────┐${RST}"
+echo -e "${PRP}│              MAIN CONTROL MENU             │${RST}"
+echo -e "${PRP}├────────────────────────────────────────────┤${RST}"
+echo -e "${CYN}│  [1]  IDX VM Setup                         │${RST}"
+echo -e "${CYN}│  [2]  Ubuntu VNC Docker                    │${RST}"
+echo -e "${CYN}│  [3]  Pterodactyl Panel Installer          │${RST}"
+echo -e "${CYN}│  [4]  Playit Tunnel                        │${RST}"
+echo -e "${CYN}│  [5]  ChunkDash Hosting Panel              │${RST}"
+echo -e "${GRN}│  [6]  VM DOCTOR (AUTO FIX QEMU/KVM)        │${RST}"
+echo -e "${RED}│  [0]  Exit                                 │${RST}"
+echo -e "${PRP}└────────────────────────────────────────────┘${RST}"
+
 echo
-read -p "Enter choice: " choice
-
-# ============================
-# OPTION 1
-# ============================
-if [ "$choice" = "1" ]; then
-
-  mkdir -p "$HOME/.idx"
-
-  cat > "$HOME/.idx/dev.nix" <<'EOF'
-{ pkgs, ... }: {
-  channel = "stable-24.05";
-  packages = [ pkgs.git pkgs.curl pkgs.qemu_kvm pkgs.cloud-utils ];
+read -p "➤ Select option: " choice
 }
-EOF
 
+# =========================
+# START
+# =========================
+menu
+
+case "$choice" in
+
+1)
+  echo "[INFO] Running IDX setup..."
   bash "$HOME/script.sh"
+  ;;
 
-# ============================
-# OPTION 2
-# ============================
-elif [ "$choice" = "2" ]; then
-
+2)
   sudo apt update -y
   command -v docker >/dev/null || sudo apt install -y docker.io
+  docker run -d --name ubuntu-vnc -p 6080:6080 lapiogamer/ubuntu-vnc
+  ;;
 
-  docker run -d \
-    --name myubuntu \
-    -p 6080:6080 \
-    -p 5901:5901 \
-    lapiogamer/ubuntu-vnc
-
-# ============================
-# OPTION 3
-# ============================
-elif [ "$choice" = "3" ]; then
+3)
   bash <(curl -s https://pterodactyl-installer.se)
+  ;;
 
-# ============================
-# OPTION 4
-# ============================
-elif [ "$choice" = "4" ]; then
+4)
   sudo apt update
   sudo apt install -y curl gnupg
   curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
-  echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit-cloud.list
+  echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.github.io/ppa/data ./" | sudo tee /etc/apt/sources.list.d/playit.list
   sudo apt update
   sudo apt install -y playit
+  ;;
 
-# ============================
-# OPTION 5
-# ============================
-elif [ "$choice" = "5" ]; then
-
+5)
   git clone https://github.com/deadlauncherg/Hosting-panel.git || true
-  cd Hosting-panel || exit
+  cd Hosting-panel
   npm install
+  ;;
 
-# ============================
-# OPTION 6 (NEW)
-# ============================
-elif [ "$choice" = "6" ]; then
-  kvm_fallback
+6)
+  vm_doctor
+  ;;
 
-# ============================
-# EXIT
-# ============================
-else
-  echo -e "${RED}[EXIT] Bye!${RST}"
+0)
+  echo -e "${RED}Exiting... Bye!${RST}"
   exit 0
-fi
+  ;;
+
+*)
+  echo -e "${RED}Invalid option!${RST}"
+  ;;
+esac
