@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # ============================================================
 #                         LAPIO BHAI
-#                      Server Installer
+#                        Vps Manager
 # ============================================================
 
 # ---------- Colors ----------
@@ -21,6 +21,10 @@ WHITE='\033[37m'
 BRIGHT_BLUE='\033[94m'
 BRIGHT_CYAN='\033[96m'
 BRIGHT_WHITE='\033[97m'
+BRIGHT_GREEN='\033[92m'
+BRIGHT_RED='\033[91m'
+BRIGHT_YELLOW='\033[93m'
+BRIGHT_MAGENTA='\033[95m'
 
 APP_NAME="LAPIO BHAI"
 APP_VERSION="2.1"
@@ -41,11 +45,108 @@ fi
 
 # ---------- Terminal helpers ----------
 term_width() {
-    tput cols 2>/dev/null || echo 80
+    local width
+    width="$(tput cols 2>/dev/null || true)"
+    [[ "$width" =~ ^[0-9]+$ ]] || width=80
+    (( width < 70 )) && width=70
+    printf '%s\n' "$width"
 }
 
 line() {
-    printf '%s\n' "  ------------------------------------------------------------"
+    echo -e "  ${BRIGHT_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+}
+
+# ---------- Live system information ----------
+human_gb() {
+    local mb="${1:-0}"
+    awk -v mb="$mb" 'BEGIN {
+        if (mb >= 1024) printf "%.1f GB", mb/1024;
+        else printf "%d MB", mb;
+    }'
+}
+
+usage_bar() {
+    local percent="${1:-0}"
+    local width=12
+    local filled empty
+    [[ "$percent" =~ ^[0-9]+$ ]] || percent=0
+    (( percent < 0 )) && percent=0
+    (( percent > 100 )) && percent=100
+    filled=$(( percent * width / 100 ))
+    empty=$(( width - filled ))
+
+    printf '%s' "${BRIGHT_CYAN}"
+    local i
+    for ((i=0; i<filled; i++)); do printf '▰'; done
+    printf '%s' "${DIM}"
+    for ((i=0; i<empty; i++)); do printf '▱'; done
+    printf '%s' "${RESET}"
+}
+
+get_ram_stats() {
+    local total used percent
+    if command -v free >/dev/null 2>&1; then
+        read -r total used < <(free -m | awk '/^Mem:/ {print $2, $3}')
+    fi
+    total="${total:-0}"
+    used="${used:-0}"
+    if (( total > 0 )); then
+        percent=$(( used * 100 / total ))
+    else
+        percent=0
+    fi
+    printf '%s|%s|%s' "$used" "$total" "$percent"
+}
+
+get_disk_stats() {
+    local used total percent
+    read -r used total percent < <(
+        df -P / 2>/dev/null | awk 'NR==2 {
+            gsub(/%/, "", $5);
+            printf "%s %s %s\n", $3, $2, $5
+        }'
+    )
+    used="${used:-0}"
+    total="${total:-0}"
+    percent="${percent:-0}"
+    printf '%s|%s|%s' "$used" "$total" "$percent"
+}
+
+get_cpu_percent() {
+    local load cores percent
+    load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
+    cores="$(nproc 2>/dev/null || echo 1)"
+    percent="$(awk -v load="$load" -v cores="$cores" 'BEGIN {
+        if (cores < 1) cores=1;
+        p=(load/cores)*100;
+        if (p > 100) p=100;
+        if (p < 0) p=0;
+        printf "%d", p
+    }')"
+    printf '%s' "${percent:-0}"
+}
+
+get_uptime_short() {
+    awk '{
+        s=int($1);
+        d=int(s/86400); s%=86400;
+        h=int(s/3600); s%=3600;
+        m=int(s/60);
+        if (d>0) printf "%dd %dh", d, h;
+        else if (h>0) printf "%dh %dm", h, m;
+        else printf "%dm", m;
+    }' /proc/uptime 2>/dev/null || printf '%s' "unknown"
+}
+
+resource_status_color() {
+    local percent="${1:-0}"
+    if (( percent >= 90 )); then
+        printf '%s' "$BRIGHT_RED"
+    elif (( percent >= 75 )); then
+        printf '%s' "$BRIGHT_YELLOW"
+    else
+        printf '%s' "$BRIGHT_GREEN"
+    fi
 }
 
 pause_screen() {
@@ -134,16 +235,16 @@ wait_pid_silent() {
 header() {
     clear
     echo
-    echo -e "  ${BRIGHT_CYAN}${BOLD}LAPIO BHAI${RESET}"
-    echo -e "  ${DIM}SERVER INSTALLER  |  v${APP_VERSION}${RESET}"
-    echo -e "  ${BRIGHT_CYAN}------------------------------------------------------------${RESET}"
+    echo -e "  ${BRIGHT_CYAN}${BOLD}╭────────────────────────────────────────────────────────────╮${RESET}"
+    echo -e "  ${BRIGHT_CYAN}${BOLD}│${RESET}  ${BRIGHT_MAGENTA}${BOLD}LAPIO BHAI${RESET}  ${DIM}•${RESET}  ${BRIGHT_WHITE}SERVER INSTALLER${RESET}  ${DIM}v${APP_VERSION}${RESET}       ${BRIGHT_CYAN}${BOLD}│${RESET}"
+    echo -e "  ${BRIGHT_CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${RESET}"
     echo
 }
 
 section_title() {
     local title="$1"
-    echo -e "  ${BRIGHT_WHITE}${BOLD}${title}${RESET}"
-    echo -e "  ${DIM}------------------------------------------------------------${RESET}"
+    echo -e "  ${BRIGHT_BLUE}${BOLD}┌─${RESET} ${BRIGHT_WHITE}${BOLD}${title}${RESET}"
+    echo -e "  ${BRIGHT_BLUE}${BOLD}└────────────────────────────────────────────────────────────${RESET}"
     echo
 }
 
@@ -634,36 +735,70 @@ main_menu() {
     while true; do
         header
 
-        local host_arch kvm_status
+        local host_arch kvm_status kvm_label kvm_color
+        local ram_stats ram_used ram_total ram_percent
+        local disk_stats disk_used disk_total disk_percent
+        local cpu_percent cpu_color
+        local uptime_short
+
         host_arch="$(uname -m 2>/dev/null || echo unknown)"
         kvm_status="$(detect_virtualization)"
 
-        echo -e "  ${GREEN}ONLINE${RESET}  ${DIM}Host:${RESET} ${WHITE}${host_arch}${RESET}  ${DIM}KVM:${RESET} ${WHITE}${kvm_status}${RESET}"
+        if [ "$kvm_status" = "available" ]; then
+            kvm_label="AVAILABLE"
+            kvm_color="$BRIGHT_GREEN"
+        else
+            kvm_label="UNAVAILABLE"
+            kvm_color="$BRIGHT_YELLOW"
+        fi
+
+        ram_stats="$(get_ram_stats)"
+        IFS='|' read -r ram_used ram_total ram_percent <<< "$ram_stats"
+
+        disk_stats="$(get_disk_stats)"
+        IFS='|' read -r disk_used disk_total disk_percent <<< "$disk_stats"
+
+        cpu_percent="$(get_cpu_percent)"
+        cpu_color="$(resource_status_color "$cpu_percent")"
+        uptime_short="$(get_uptime_short)"
+
+        echo -e "  ${BRIGHT_GREEN}${BOLD}● ONLINE${RESET}  ${DIM}HOST${RESET} ${WHITE}${host_arch}${RESET}  ${DIM}KVM${RESET} ${kvm_color}${BOLD}${kvm_label}${RESET}"
         echo
+
+        # Compact live resource panel. All values are read locally and safely
+        # fall back to zero/unknown if a utility is unavailable.
+        echo -e "  ${BRIGHT_BLUE}${BOLD}╭──────────────────── LIVE SYSTEM ───────────────────────────╮${RESET}"
+        echo -e "  ${BRIGHT_BLUE}${BOLD}│${RESET}  ${BRIGHT_WHITE}${BOLD}RAM${RESET}   ${DIM}$(human_gb "$ram_used") / $(human_gb "$ram_total")${RESET}  ${cpu_color}${BOLD}${ram_percent}%${RESET}  $(usage_bar "$ram_percent") ${BRIGHT_BLUE}${BOLD}│${RESET}"
+        echo -e "  ${BRIGHT_BLUE}${BOLD}│${RESET}  ${BRIGHT_WHITE}${BOLD}DISK${RESET}  ${DIM}$(human_gb "$((disk_used / 1024))") / $(human_gb "$((disk_total / 1024))")${RESET}  $(resource_status_color "$disk_percent")${BOLD}${disk_percent}%${RESET}  $(usage_bar "$disk_percent") ${BRIGHT_BLUE}${BOLD}│${RESET}"
+        echo -e "  ${BRIGHT_BLUE}${BOLD}│${RESET}  ${BRIGHT_WHITE}${BOLD}CPU${RESET}   ${DIM}load usage${RESET}  ${cpu_color}${BOLD}${cpu_percent}%${RESET}  $(usage_bar "$cpu_percent")   ${DIM}UP ${uptime_short}${RESET} ${BRIGHT_BLUE}${BOLD}│${RESET}"
+        echo -e "  ${BRIGHT_BLUE}${BOLD}╰────────────────────────────────────────────────────────────╯${RESET}"
+        echo
+
         line
+        echo -e "  ${BRIGHT_WHITE}${BOLD}MAIN MENU${RESET}  ${DIM}Select a module to continue${RESET}"
         echo
-        echo -e "  ${BRIGHT_WHITE}${BOLD}MAIN MENU${RESET}"
-        echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}.VPS${RESET}"
+
+        echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${BRIGHT_WHITE}${BOLD}.VPS${RESET}"
         echo -e "      ${DIM}Virtualisation, TCG mode and VPS management${RESET}"
         echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}.PTERODACTYL${RESET}"
+        echo -e "  ${BRIGHT_MAGENTA}${BOLD}02${RESET}  ${BRIGHT_WHITE}${BOLD}.PTERODACTYL${RESET}"
         echo -e "      ${DIM}Install Pterodactyl Panel and Wings${RESET}"
         echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}03${RESET}  ${WHITE}.TOOLS${RESET}"
+        echo -e "  ${BRIGHT_YELLOW}${BOLD}03${RESET}  ${BRIGHT_WHITE}${BOLD}.TOOLS${RESET}"
         echo -e "      ${DIM}Server and networking tools${RESET}"
         echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}04${RESET}  ${WHITE}.DASHBOARDS${RESET}"
+        echo -e "  ${BRIGHT_BLUE}${BOLD}04${RESET}  ${BRIGHT_WHITE}${BOLD}.DASHBOARDS${RESET}"
         echo -e "      ${DIM}ChunkDash / Feastic hosting dashboard${RESET}"
         echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}05${RESET}  ${WHITE}LOGS${RESET}"
+        echo -e "  ${BRIGHT_GREEN}${BOLD}05${RESET}  ${BRIGHT_WHITE}${BOLD}LOGS${RESET}"
         echo -e "      ${DIM}View recent installer errors${RESET}"
         echo
-        echo -e "  ${BRIGHT_CYAN}${BOLD}00${RESET}  ${WHITE}EXIT${RESET}"
+        echo -e "  ${DIM}${BOLD}00${RESET}  ${BRIGHT_WHITE}${BOLD}EXIT${RESET}"
         echo
+
         line
-        echo
-        read -r -p "  Select [00-05]: " choice
+        echo -e "  ${DIM}LAPIO BHAI${RESET} ${BRIGHT_CYAN}›${RESET} ${DIM}Ready for command${RESET}"
+        read -r -p "  ${BRIGHT_CYAN}${BOLD}Select [00-05] › ${RESET}" choice
 
         case "$choice" in
             1|01) vps_menu ;;
