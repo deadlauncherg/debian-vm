@@ -23,7 +23,7 @@ BRIGHT_CYAN='\033[96m'
 BRIGHT_WHITE='\033[97m'
 
 APP_NAME="LAPIO BHAI"
-APP_VERSION="2.0"
+APP_VERSION="2.1"
 LOG_DIR="${HOME}/.lapio-bhai"
 LOG_FILE="${LOG_DIR}/installer.log"
 VPS_DIR="${HOME}/.lapio-bhai/vps"
@@ -34,9 +34,9 @@ touch "$LOG_FILE"
 
 # ---------- Root / sudo ----------
 if [ "$(id -u)" -eq 0 ]; then
-    SUDO_CMD=""
+    SUDO_CMD=()
 else
-    SUDO_CMD="sudo"
+    SUDO_CMD=(sudo)
 fi
 
 # ---------- Terminal helpers ----------
@@ -45,9 +45,7 @@ term_width() {
 }
 
 line() {
-    local width
-    width=$(term_width)
-    printf '%*s\n' "$width" '' | tr ' ' '─'
+    printf '%s\n' "  ------------------------------------------------------------"
 }
 
 pause_screen() {
@@ -56,7 +54,7 @@ pause_screen() {
 }
 
 status_ok() {
-    echo -e "  ${GREEN}✓${RESET} $1"
+    echo -e "  ${GREEN}OK${RESET} $1"
 }
 
 status_warn() {
@@ -64,7 +62,7 @@ status_warn() {
 }
 
 status_fail() {
-    echo -e "  ${RED}✗${RESET} $1"
+    echo -e "  ${RED}FAIL${RESET} $1"
 }
 
 # Run a command without printing the command itself.
@@ -90,20 +88,21 @@ run_silent() {
 
     if wait "$pid"; then
         printf '\b'
-        echo -e "${GREEN}✓${RESET}"
+        echo -e "${GREEN}OK${RESET}"
         cat "$tmp" >> "$LOG_FILE" 2>/dev/null || true
         rm -f "$tmp"
         return 0
     else
         printf '\b'
-        echo -e "${RED}✗${RESET}"
+        echo -e "${RED}FAIL${RESET}"
         {
             echo
-            echo "========== FAILED TASK: $label =========="
+            echo "[FAILED] $label"
             cat "$tmp" 2>/dev/null || true
         } >> "$LOG_FILE"
         rm -f "$tmp"
-        status_warn "Task failed. Details: $LOG_FILE"
+        echo -e "  ${RED}Failed:${RESET} ${label}"
+        echo -e "  ${DIM}Log: ${LOG_FILE}${RESET}"
         return 1
     fi
 }
@@ -123,29 +122,28 @@ wait_pid_silent() {
 
     if wait "$pid"; then
         printf '\b'
-        echo -e "${GREEN}✓${RESET}"
+        echo -e "${GREEN}OK${RESET}"
         return 0
     fi
 
     printf '\b'
-    echo -e "${RED}✗${RESET}"
+    echo -e "${RED}FAIL${RESET}"
     return 1
 }
 
 header() {
     clear
     echo
-    echo -e "  ${BRIGHT_CYAN}${BOLD}╔══════════════════════════════════════════════════════╗${RESET}"
-    echo -e "  ${BRIGHT_CYAN}${BOLD}║${RESET}                ${BRIGHT_WHITE}${BOLD}LAPIO BHAI${RESET}                         ${BRIGHT_CYAN}${BOLD}║${RESET}"
-    echo -e "  ${BRIGHT_CYAN}${BOLD}║${RESET}          ${DIM}SERVER INSTALLER • v${APP_VERSION}${RESET}              ${BRIGHT_CYAN}${BOLD}║${RESET}"
-    echo -e "  ${BRIGHT_CYAN}${BOLD}╚══════════════════════════════════════════════════════╝${RESET}"
+    echo -e "  ${BRIGHT_CYAN}${BOLD}LAPIO BHAI${RESET}"
+    echo -e "  ${DIM}SERVER INSTALLER  |  v${APP_VERSION}${RESET}"
+    echo -e "  ${BRIGHT_CYAN}------------------------------------------------------------${RESET}"
     echo
 }
 
 section_title() {
     local title="$1"
-    echo -e "  ${BRIGHT_BLUE}${BOLD}┌─ ${title}${RESET}"
-    echo -e "  ${BRIGHT_BLUE}${BOLD}└──────────────────────────────────────────────────────${RESET}"
+    echo -e "  ${BRIGHT_WHITE}${BOLD}${title}${RESET}"
+    echo -e "  ${DIM}------------------------------------------------------------${RESET}"
     echo
 }
 
@@ -191,35 +189,30 @@ detect_virtualization() {
 }
 
 install_vps_dependencies() {
-    run_silent "Updating package index" "$SUDO_CMD" apt-get update -y || return 1
-
-    run_silent "Installing VPS dependencies" "$SUDO_CMD" apt-get install -y \
-        qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates
+    run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || return 1
+    run_silent "Installing VPS packages" "${SUDO_CMD[@]}" apt-get install -y \
+        qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates \
+        || return 1
 }
 
 download_vps_image() {
-    VPS_IMAGE="$VPS_DIR/ubuntu22.qcow2"
+    VPS_IMAGE="${VPS_DIR}/ubuntu22.qcow2"
 
     if [ -f "$VPS_IMAGE" ]; then
         status_ok "Ubuntu 22.04 image cache found"
-        return 0
+    else
+        run_silent "Downloading Ubuntu 22.04 image" \
+            "${SUDO_CMD[@]}" wget -q --show-progress \
+            "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img" \
+            -O "$VPS_IMAGE" || return 1
     fi
 
-    local raw="${VPS_DIR}/ubuntu22.img"
-
-    run_silent "Downloading Ubuntu 22.04 image" \
-        "$SUDO_CMD" wget -q \
-        "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img" \
-        -O "$raw" || return 1
-
-    run_silent "Preparing VPS disk image" \
-        "$SUDO_CMD" qemu-img convert -O qcow2 "$raw" "$VPS_IMAGE" || return 1
-
-    rm -f "$raw"
+    # The source VPS script uses qemu-img resize on the Ubuntu cloud image.
+    # Keep the image format explicit so both KVM and TCG use the same disk.
     run_silent "Expanding VPS disk" \
-        "$SUDO_CMD" qemu-img resize "$VPS_IMAGE" "${DISK_GB}G" || return 1
+        "${SUDO_CMD[@]}" qemu-img resize "$VPS_IMAGE" "${DISK_GB}G" || return 1
 
-    "$SUDO_CMD" chmod 666 "$VPS_IMAGE" 2>/dev/null || true
+    "${SUDO_CMD[@]}" chmod 666 "$VPS_IMAGE" 2>/dev/null || true
 }
 
 create_cloud_init() {
@@ -232,6 +225,7 @@ create_cloud_init() {
 hostname: lapio-vps
 manage_etc_hosts: true
 ssh_pwauth: true
+ssh_deletekeys: false
 users:
   - default
   - name: ${USER_NAME}
@@ -270,37 +264,38 @@ start_vps() {
     local seed="$VPS_DIR/seed.img"
 
     if [ ! -f "$image" ] || [ ! -f "$seed" ]; then
-        status_fail "VPS files are missing. Create a VPS first."
+        status_fail "VPS files are missing. Create the VPS first."
         pause_screen
-        return
+        return 1
     fi
 
     header
-    section_title "VPS STATUS"
+    section_title "START VPS"
 
-    local kvm_args=()
+    local accel_args=()
+    local cpu_args=()
     if [ "$VPS_MODE" = "virtualization" ] && [ "$(detect_virtualization)" = "available" ]; then
-        kvm_args=(-enable-kvm -cpu host)
-        status_ok "Hardware virtualization: ENABLED"
+        accel_args=(-enable-kvm)
+        cpu_args=(-cpu host)
+        status_ok "KVM hardware acceleration enabled"
     else
-        kvm_args=(-cpu max)
-        status_warn "Hardware virtualization: OFF — using software emulation"
+        accel_args=(-accel tcg,thread=multi)
+        cpu_args=(-cpu max)
+        status_warn "Software emulation enabled (TCG)"
     fi
 
     echo
-    echo -e "  ${WHITE}Resources${RESET}"
-    echo -e "  ${DIM}RAM       ${RESET}${CYAN}${RAM_GB} GB${RESET}"
-    echo -e "  ${DIM}CPU       ${RESET}${CYAN}${CPU_CORES} cores${RESET}"
-    echo -e "  ${DIM}Disk      ${RESET}${CYAN}${DISK_GB} GB${RESET}"
-    echo -e "  ${DIM}SSH       ${RESET}${CYAN}${TCP_HOST_PORT} → ${TCP_GUEST_PORT}${RESET}"
+    echo -e "  ${DIM}RAM     ${RESET}${CYAN}${RAM_GB} GB${RESET}"
+    echo -e "  ${DIM}CPU     ${RESET}${CYAN}${CPU_CORES} cores${RESET}"
+    echo -e "  ${DIM}Disk    ${RESET}${CYAN}${DISK_GB} GB${RESET}"
+    echo -e "  ${DIM}SSH     ${RESET}${CYAN}localhost:${TCP_HOST_PORT} -> VM:${TCP_GUEST_PORT}${RESET}"
+    echo
+    echo -e "  ${YELLOW}Starting VPS. Press Ctrl+C to stop.${RESET}"
     echo
 
-    echo -e "  ${YELLOW}Starting VPS...${RESET}"
-    echo -e "  ${DIM}Press Ctrl+C to stop the VPS.${RESET}"
-    echo
-
-    qemu-system-x86_64 \
-        "${kvm_args[@]}" \
+    "${SUDO_CMD[@]}" qemu-system-x86_64 \
+        "${accel_args[@]}" \
+        "${cpu_args[@]}" \
         -m "${RAM_GB}G" \
         -smp "$CPU_CORES" \
         -drive "file=${image},format=qcow2,if=virtio" \
@@ -383,74 +378,71 @@ vps_no_virtualization() {
     create_vps
 }
 
-vps_menu() {
-    while true; do
-        header
-        section_title ".VPS INSTALLER"
-
-        echo -e "  ${CYAN}01${RESET}  ${WHITE}VPS with Virtualisation${RESET}"
-        echo -e "      ${DIM}QEMU + KVM hardware acceleration when available${RESET}"
-        echo
-        echo -e "  ${CYAN}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
-        echo -e "      ${DIM}QEMU software emulation / TCG mode${RESET}"
-        echo
-        echo -e "  ${CYAN}03${RESET}  ${WHITE}Start Existing VPS${RESET}"
-        echo -e "      ${DIM}Boot the saved VPS configuration${RESET}"
-        echo
-        echo -e "  ${CYAN}04${RESET}  ${WHITE}Network Settings${RESET}"
-        echo
-        echo -e "  ${CYAN}05${RESET}  ${WHITE}Clean VPS${RESET}"
-        echo
-        echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
-        echo
-
-        read -r -p "  Select › " choice
-
-        case "$choice" in
-            1) vps_virtualization ;;
-            2) vps_no_virtualization ;;
-            3) start_vps ;;
-            4) vps_network ;;
-            5) clean_vps ;;
-            0|00) return ;;
-            *) status_fail "Invalid selection"; sleep 1 ;;
-        esac
-    done
-}
-
-vps_network() {
+configure_network() {
     header
-    section_title "VPS • NETWORK"
-
+    section_title "VPS NETWORK"
     load_vps_env
 
-    echo -e "  Current: ${CYAN}${TCP_HOST_PORT} → ${TCP_GUEST_PORT}${RESET}"
+    echo -e "  ${DIM}Current:${RESET} ${CYAN}localhost:${TCP_HOST_PORT} -> VM:${TCP_GUEST_PORT}${RESET}"
     echo
-
-    read -r -p "  New host port [${TCP_HOST_PORT}]: " value
+    read -r -p "  New host SSH port [${TCP_HOST_PORT}]: " value
     TCP_HOST_PORT="${value:-$TCP_HOST_PORT}"
-
-    read -r -p "  Guest port [${TCP_GUEST_PORT}]: " value
-    TCP_GUEST_PORT="${value:-$TCP_GUEST_PORT}"
-
     save_vps_env
-    status_ok "Network settings saved"
+    echo
+    status_ok "SSH forwarding port saved: ${TCP_HOST_PORT}"
     pause_screen
 }
 
 clean_vps() {
     header
     section_title "CLEAN VPS"
+    echo -e "  ${YELLOW}This removes the saved VPS disk, cloud-init and configuration.${RESET}"
+    echo
+    read -r -p "  Continue? [y/N]: " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || return
 
-    read -r -p "  Remove the VPS image and configuration? [y/N]: " answer
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-        run_silent "Removing VPS files" "$SUDO_CMD" rm -rf "$VPS_DIR"
-        mkdir -p "$VPS_DIR"
-        status_ok "VPS workspace cleaned"
-    else
-        status_warn "Cleanup cancelled"
-    fi
+    run_silent "Removing VPS files" rm -rf "$VPS_DIR" || { mkdir -p "$VPS_DIR"; pause_screen; return; }
+    mkdir -p "$VPS_DIR"
+    rm -f "$VPS_ENV" 2>/dev/null || true
+    status_ok "VPS workspace cleaned"
     pause_screen
+}
+
+vps_menu() {
+    while true; do
+        header
+        section_title ".VPS"
+
+        echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}VPS with Virtualisation${RESET}"
+        echo -e "      ${DIM}KVM acceleration when /dev/kvm is available${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
+        echo -e "      ${DIM}QEMU TCG software emulation${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}${BOLD}03${RESET}  ${WHITE}Start Existing VPS${RESET}"
+        echo -e "      ${DIM}Boot the saved VPS configuration${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}${BOLD}04${RESET}  ${WHITE}Network Settings${RESET}"
+        echo -e "      ${DIM}Change the host SSH forwarding port${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}${BOLD}05${RESET}  ${WHITE}Clean VPS${RESET}"
+        echo -e "      ${DIM}Remove VPS image and cloud-init files${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}${BOLD}00${RESET}  ${WHITE}Back${RESET}"
+        echo
+
+        read -r -p "  Select option [00-05]: " choice
+
+        case "$choice" in
+            1|01) vps_virtualization ;;
+            2|02) vps_no_virtualization ;;
+            3|03) start_vps ;;
+            4|04) configure_network ;;
+            5|05) clean_vps ;;
+            0|00) return ;;
+            *) status_fail "Invalid option"; sleep 1 ;;
+        esac
+    done
 }
 
 # ============================================================
@@ -493,8 +485,8 @@ install_playit() {
     header
     section_title ".TOOLS • PLAYIT"
 
-    run_silent "Updating package index" "$SUDO_CMD" apt-get update -y || { pause_screen; return; }
-    run_silent "Installing Playit dependencies" "$SUDO_CMD" apt-get install -y curl gnupg ca-certificates || { pause_screen; return; }
+    run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update -y || { pause_screen; return; }
+    run_silent "Installing Playit dependencies" "${SUDO_CMD[@]}" apt-get install -y curl gnupg ca-certificates || { pause_screen; return; }
 
     local keyring="/etc/apt/trusted.gpg.d/playit.gpg"
     local repo="/etc/apt/sources.list.d/playit-cloud.list"
@@ -510,8 +502,8 @@ install_playit() {
     echo "deb [signed-by=${keyring}] https://playit-cloud.github.io/ppa/data ./" \
         | $SUDO_CMD tee "$repo" >/dev/null
 
-    run_silent "Refreshing Playit repository" "$SUDO_CMD" apt-get update -y || { pause_screen; return; }
-    run_silent "Installing Playit" "$SUDO_CMD" apt-get install -y playit || { pause_screen; return; }
+    run_silent "Refreshing Playit repository" "${SUDO_CMD[@]}" apt-get update -y || { pause_screen; return; }
+    run_silent "Installing Playit" "${SUDO_CMD[@]}" apt-get install -y playit || { pause_screen; return; }
 
     status_ok "Playit installed successfully"
     echo -e "  ${DIM}Run Playit from your server when you are ready to authenticate it.${RESET}"
@@ -642,22 +634,21 @@ main_menu() {
     while true; do
         header
 
-        # System status
         local host_arch kvm_status
         host_arch="$(uname -m 2>/dev/null || echo unknown)"
         kvm_status="$(detect_virtualization)"
 
-        echo -e "  ${GREEN}● ONLINE${RESET}    ${DIM}Host:${RESET} ${WHITE}${host_arch}${RESET}    ${DIM}KVM:${RESET} ${WHITE}${kvm_status}${RESET}"
+        echo -e "  ${GREEN}ONLINE${RESET}  ${DIM}Host:${RESET} ${WHITE}${host_arch}${RESET}  ${DIM}KVM:${RESET} ${WHITE}${kvm_status}${RESET}"
         echo
         line
         echo
-        echo -e "  ${BRIGHT_WHITE}${BOLD}INSTALLER MENU${RESET}"
+        echo -e "  ${BRIGHT_WHITE}${BOLD}MAIN MENU${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}.VPS${RESET}"
-        echo -e "      ${DIM}Virtualisation / No Virtualisation / VPS manager${RESET}"
+        echo -e "      ${DIM}Virtualisation, TCG mode and VPS management${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}.PTERODACTYL${RESET}"
-        echo -e "      ${DIM}Install Pterodactyl Panel + Wings${RESET}"
+        echo -e "      ${DIM}Install Pterodactyl Panel and Wings${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}03${RESET}  ${WHITE}.TOOLS${RESET}"
         echo -e "      ${DIM}Server and networking tools${RESET}"
@@ -666,13 +657,13 @@ main_menu() {
         echo -e "      ${DIM}ChunkDash / Feastic hosting dashboard${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}05${RESET}  ${WHITE}LOGS${RESET}"
-        echo -e "      ${DIM}View installer activity and errors${RESET}"
+        echo -e "      ${DIM}View recent installer errors${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}00${RESET}  ${WHITE}EXIT${RESET}"
         echo
         line
         echo
-        read -r -p "  Select option › " choice
+        read -r -p "  Select [00-05]: " choice
 
         case "$choice" in
             1|01) vps_menu ;;
@@ -682,9 +673,9 @@ main_menu() {
             5|05)
                 header
                 section_title "INSTALLER LOG"
-                echo -e "  ${DIM}Log file:${RESET} ${CYAN}${LOG_FILE}${RESET}"
+                echo -e "  ${DIM}${LOG_FILE}${RESET}"
                 echo
-                tail -n 80 "$LOG_FILE" 2>/dev/null || true
+                tail -n 60 "$LOG_FILE" 2>/dev/null || true
                 pause_screen
                 ;;
             0|00)
@@ -694,15 +685,12 @@ main_menu() {
                 echo
                 exit 0
                 ;;
-            *)
-                status_fail "Invalid selection. Choose a menu number."
-                sleep 1
-                ;;
+            *) status_fail "Invalid option"; sleep 1 ;;
         esac
     done
 }
 
 # ---------- Error trap ----------
-trap 'echo; status_fail "Unexpected error. Check: $LOG_FILE"; pause_screen' ERR
+trap 'echo; status_fail "Unexpected error. See: $LOG_FILE"; pause_screen' ERR
 
 main_menu
