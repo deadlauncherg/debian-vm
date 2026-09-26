@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # ============================================================
 #                         LAPIO BHAI
-#              Professional Server Installer
+#                      Server Installer
 # ============================================================
 
 # ---------- Colors ----------
