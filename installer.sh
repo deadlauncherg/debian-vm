@@ -7,27 +7,27 @@ set -Eeuo pipefail
 # ============================================================
 
 # ---------- Colors ----------
-RESET='\033[0m'
-BOLD='\033[1m'
-DIM='\033[2m'
-BLACK='\033[30m'
-RED='\033[31m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-MAGENTA='\033[35m'
-CYAN='\033[36m'
-WHITE='\033[37m'
-BRIGHT_BLUE='\033[94m'
-BRIGHT_CYAN='\033[96m'
-BRIGHT_WHITE='\033[97m'
-BRIGHT_GREEN='\033[92m'
-BRIGHT_RED='\033[91m'
-BRIGHT_YELLOW='\033[93m'
-BRIGHT_MAGENTA='\033[95m'
+RESET=$'\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+BLACK=$'\033[30m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BLUE=$'\033[34m'
+MAGENTA=$'\033[35m'
+CYAN=$'\033[36m'
+WHITE=$'\033[37m'
+BRIGHT_BLUE=$'\033[94m'
+BRIGHT_CYAN=$'\033[96m'
+BRIGHT_WHITE=$'\033[97m'
+BRIGHT_GREEN=$'\033[92m'
+BRIGHT_RED=$'\033[91m'
+BRIGHT_YELLOW=$'\033[93m'
+BRIGHT_MAGENTA=$'\033[95m'
 
 APP_NAME="LAPIO BHAI"
-APP_VERSION="2.1"
+APP_VERSION="2.5"
 LOG_DIR="${HOME}/.lapio-bhai"
 LOG_FILE="${LOG_DIR}/installer.log"
 VPS_DIR="${HOME}/.lapio-bhai/vps"
@@ -281,12 +281,103 @@ VPS_MODE=${VPS_MODE}
 EOF
 }
 
+# Detect the host virtualization environment.
+# For the "WITH VIRTUALISATION" option we require systemd-detect-virt
+# to report KVM AND /dev/kvm to be usable. Option 02 is always the TCG fallback.
+detect_virt_type() {
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        systemd-detect-virt 2>/dev/null || true
+    else
+        printf '%s' "unknown"
+    fi
+}
+
 detect_virtualization() {
-    if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    local virt_type
+    virt_type="$(detect_virt_type)"
+
+    if [ "$virt_type" = "kvm" ] && [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
         echo "available"
     else
         echo "unavailable"
     fi
+}
+
+kvm_detection_message() {
+    local virt_type
+    virt_type="$(detect_virt_type)"
+
+    if [ "$virt_type" = "kvm" ] && [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+        echo -e "  ${BRIGHT_GREEN}${BOLD}● KVM VIRTUALISATION AVAILABLE${RESET}"
+        echo -e "  ${DIM}systemd-detect-virt:${RESET} ${GREEN}${virt_type}${RESET}"
+        echo -e "  ${DIM}/dev/kvm:${RESET} ${GREEN}ready${RESET}"
+        return 0
+    fi
+
+    echo -e "  ${BRIGHT_YELLOW}${BOLD}● KVM VIRTUALISATION UNAVAILABLE${RESET}"
+    echo -e "  ${DIM}systemd-detect-virt:${RESET} ${YELLOW}${virt_type:-unknown}${RESET}"
+    if [ -e /dev/kvm ]; then
+        echo -e "  ${DIM}/dev/kvm:${RESET} ${YELLOW}not usable for this mode${RESET}"
+    else
+        echo -e "  ${DIM}/dev/kvm:${RESET} ${YELLOW}not available${RESET}"
+    fi
+    return 1
+}
+
+port_in_use() {
+    local port="$1"
+
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        return 0
+    fi
+
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnH 2>/dev/null | awk -v p=":${port}" '$4 ~ p"$" {found=1} END {exit !found}'
+        return $?
+    fi
+
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -s "${port}/tcp" 2>/dev/null
+        return $?
+    fi
+
+    # If no socket-inspection tool exists, let QEMU perform the final check.
+    return 1
+}
+
+find_free_host_port() {
+    local requested="$1"
+    local port="$requested"
+
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+        port=2222
+    fi
+
+    while [ "$port" -le 65535 ]; do
+        if ! port_in_use "$port"; then
+            printf '%s' "$port"
+            return 0
+        fi
+        port=$((port + 1))
+    done
+
+    return 1
+}
+
+vps_image_in_use() {
+    local image="$1"
+    if command -v fuser >/dev/null 2>&1 && fuser -s "$image" 2>/dev/null; then
+        return 0
+    fi
+    if command -v lsof >/dev/null 2>&1 && lsof "$image" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 install_vps_dependencies() {
@@ -366,23 +457,74 @@ start_vps() {
 
     if [ ! -f "$image" ] || [ ! -f "$seed" ]; then
         status_fail "VPS files are missing. Create the VPS first."
-        pause_screen
-        return 1
+        echo -e "  ${DIM}Returning to the VPS menu...${RESET}"
+        sleep 1
+        return 0
+    fi
+
+    # Only treat the disk as locked when a real process is using it.
+    # A stale/old lock message must never block a fresh VPS start.
+    if vps_image_in_use "$image"; then
+        header
+        section_title "START VPS"
+        echo -e "  ${BRIGHT_YELLOW}${BOLD}● VPS ALREADY RUNNING${RESET}"
+        echo
+        echo -e "  ${DIM}The VPS disk is currently being used by QEMU.${RESET}"
+        echo -e "  ${DIM}Starting another instance would be unsafe, so it was blocked.${RESET}"
+        echo
+        echo -e "  ${DIM}SSH:${RESET} ${CYAN}localhost:${TCP_HOST_PORT} -> VM:${TCP_GUEST_PORT}${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
+        read -r _
+        return 0
+    fi
+
+    # QEMU cannot bind a forwarding port that is already used by SSH or another service.
+    # Pick the requested port when free; otherwise move to the next free TCP port.
+    local original_host_port="$TCP_HOST_PORT"
+    local free_host_port
+    free_host_port="$(find_free_host_port "$TCP_HOST_PORT")" || {
+        status_fail "No free TCP port is available for SSH forwarding."
+        echo -e "  ${DIM}Requested port: ${TCP_HOST_PORT}${RESET}"
+        echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
+        read -r _
+        return 0
+    }
+    if [ "$free_host_port" != "$TCP_HOST_PORT" ]; then
+        TCP_HOST_PORT="$free_host_port"
+        save_vps_env
     fi
 
     header
     section_title "START VPS"
 
+    if [ "$free_host_port" != "$original_host_port" ]; then
+        status_warn "Host port ${original_host_port} is already in use; using ${TCP_HOST_PORT} instead."
+        echo -e "  ${DIM}SSH forwarding: localhost:${TCP_HOST_PORT} -> VM:${TCP_GUEST_PORT}${RESET}"
+        echo
+    fi
+
     local accel_args=()
     local cpu_args=()
-    if [ "$VPS_MODE" = "virtualization" ] && [ "$(detect_virtualization)" = "available" ]; then
+    if [ "$VPS_MODE" = "virtualization" ]; then
+        if ! kvm_detection_message; then
+            echo
+            status_warn "Real KVM is not available for this VPS."
+            echo -e "  ${DIM}Use option 02 (.VPS without Virtualisation) to run with QEMU TCG.${RESET}"
+            echo
+            echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
+            read -r _
+            return 0
+        fi
         accel_args=(-enable-kvm)
         cpu_args=(-cpu host)
-        status_ok "KVM hardware acceleration enabled"
+        echo
+        status_ok "Starting with real KVM hardware acceleration"
     else
+        echo -e "  ${BRIGHT_YELLOW}${BOLD}● SOFTWARE EMULATION${RESET}"
+        echo -e "  ${DIM}QEMU TCG mode selected. No KVM is required.${RESET}"
         accel_args=(-accel tcg,thread=multi)
         cpu_args=(-cpu max)
-        status_warn "Software emulation enabled (TCG)"
     fi
 
     echo
@@ -394,6 +536,9 @@ start_vps() {
     echo -e "  ${YELLOW}Starting VPS. Press Ctrl+C to stop.${RESET}"
     echo
 
+    # QEMU is intentionally run in the foreground so the VPS stays attached
+    # to this terminal exactly like the original VPS implementation.
+    set +e
     "${SUDO_CMD[@]}" qemu-system-x86_64 \
         "${accel_args[@]}" \
         "${cpu_args[@]}" \
@@ -405,6 +550,21 @@ start_vps() {
         -nographic \
         -netdev "user,id=net0,hostfwd=tcp::${TCP_HOST_PORT}-:${TCP_GUEST_PORT}" \
         -device virtio-net-pci,netdev=net0
+    local qemu_rc=$?
+    set -e
+
+    echo
+    if [ "$qemu_rc" -eq 0 ] || [ "$qemu_rc" -eq 130 ] || [ "$qemu_rc" -eq 143 ]; then
+        status_ok "VPS stopped"
+    else
+        status_fail "QEMU exited with code ${qemu_rc}"
+        echo -e "  ${DIM}See: ${LOG_FILE}${RESET}"
+    fi
+
+    echo
+    echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
+    read -r _
+    return 0
 }
 
 create_vps() {
@@ -451,12 +611,18 @@ vps_virtualization() {
     load_vps_env
     VPS_MODE="virtualization"
 
-    if [ "$(detect_virtualization)" != "available" ]; then
-        status_warn "/dev/kvm is not available on this host."
-        echo -e "  ${DIM}The installer will still prepare the VPS, but QEMU will fall back to emulation.${RESET}"
+    echo -e "  ${DIM}Checking host virtualisation with:${RESET} ${CYAN}systemd-detect-virt${RESET}"
+    echo
+
+    if ! kvm_detection_message; then
         echo
-    else
-        status_ok "KVM virtualization detected"
+        status_warn "Option 01 requires real KVM."
+        echo -e "  ${DIM}No VPS will be created in KVM mode.${RESET}"
+        echo -e "  ${DIM}Choose option 02 to use QEMU TCG without KVM.${RESET}"
+        echo
+        echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
+        read -r _
+        return 0
     fi
 
     save_vps_env
@@ -515,7 +681,7 @@ vps_menu() {
         section_title ".VPS"
 
         echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}VPS with Virtualisation${RESET}"
-        echo -e "      ${DIM}KVM acceleration when /dev/kvm is available${RESET}"
+        echo -e "      ${DIM}Real KVM VPS when systemd-detect-virt reports kvm${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
         echo -e "      ${DIM}QEMU TCG software emulation${RESET}"
@@ -735,13 +901,14 @@ main_menu() {
     while true; do
         header
 
-        local host_arch kvm_status kvm_label kvm_color
+        local host_arch kvm_status kvm_label kvm_color virt_type
         local ram_stats ram_used ram_total ram_percent
         local disk_stats disk_used disk_total disk_percent
         local cpu_percent cpu_color
         local uptime_short
 
         host_arch="$(uname -m 2>/dev/null || echo unknown)"
+        virt_type="$(detect_virt_type)"
         kvm_status="$(detect_virtualization)"
 
         if [ "$kvm_status" = "available" ]; then
@@ -762,7 +929,7 @@ main_menu() {
         cpu_color="$(resource_status_color "$cpu_percent")"
         uptime_short="$(get_uptime_short)"
 
-        echo -e "  ${BRIGHT_GREEN}${BOLD}● ONLINE${RESET}  ${DIM}HOST${RESET} ${WHITE}${host_arch}${RESET}  ${DIM}KVM${RESET} ${kvm_color}${BOLD}${kvm_label}${RESET}"
+        echo -e "  ${BRIGHT_GREEN}${BOLD}● ONLINE${RESET}  ${DIM}HOST${RESET} ${WHITE}${host_arch}${RESET}  ${DIM}VIRT${RESET} ${WHITE}${virt_type}${RESET}  ${DIM}KVM${RESET} ${kvm_color}${BOLD}${kvm_label}${RESET}"
         echo
 
         # Compact live resource panel. All values are read locally and safely
@@ -798,7 +965,8 @@ main_menu() {
 
         line
         echo -e "  ${DIM}LAPIO BHAI${RESET} ${BRIGHT_CYAN}›${RESET} ${DIM}Ready for command${RESET}"
-        read -r -p "  ${BRIGHT_CYAN}${BOLD}Select [00-05] › ${RESET}" choice
+        printf -v MAIN_MENU_PROMPT "  %s%sSelect [00-05] › %s" "$BRIGHT_CYAN" "$BOLD" "$RESET"
+        read -r -p "$MAIN_MENU_PROMPT" choice
 
         case "$choice" in
             1|01) vps_menu ;;
