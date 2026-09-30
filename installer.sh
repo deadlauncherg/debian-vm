@@ -777,6 +777,184 @@ install_playit() {
     pause_screen
 }
 
+# ---------- CLOUDFLARE TUNNEL ----------
+install_cloudflare_tunnel() {
+    header
+    section_title ".TOOLS • CLOUDFLARE TUNNEL"
+
+    echo -e "  ${WHITE}Cloudflare Tunnel installer${RESET}"
+    echo -e "  ${DIM}Installing cloudflared and registering the tunnel as a service.${RESET}"
+    echo
+
+    # Add Cloudflare GPG key
+    run_silent "Adding Cloudflare GPG key directory" \
+        "${SUDO_CMD[@]}" mkdir -p --mode=0755 /usr/share/keyrings || { pause_screen; return; }
+
+    if ! curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg \
+        | "${SUDO_CMD[@]}" tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null 2>>"$LOG_FILE"; then
+        status_fail "Failed to add Cloudflare GPG key"
+        pause_screen
+        return
+    fi
+    status_ok "Cloudflare GPG key added"
+
+    # Add this repo to apt repositories
+    echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+        | "${SUDO_CMD[@]}" tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+
+    # Install cloudflared
+    run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || { pause_screen; return; }
+    run_silent "Installing cloudflared" "${SUDO_CMD[@]}" apt-get install cloudflared || { pause_screen; return; }
+
+    echo
+    echo -e "  ${BRIGHT_WHITE}${BOLD}Cloudflare Tunnel Token${RESET}"
+    echo -e "  ${DIM}Paste your Cloudflare tunnel token or the full install command.${RESET}"
+    echo -e "  ${DIM}Input is visible so you can confirm what was pasted.${RESET}"
+    echo
+
+    local tunnel_token token_input
+    # Accept either a raw token or the full command copied from Cloudflare.
+    # Input is intentionally visible at the user's request. It is never written
+    # to the installer log.
+    read -r -p "  Token or full install command: " token_input
+    echo
+
+    # Remove terminal bracketed-paste markers before parsing the token.
+    # Some terminals pass the real ESC sequences, while others expose them
+    # literally as ^[[200~ ... ^[[201~ (sometimes with an extra ~).
+    local bp_start=$'\e[200~'
+    local bp_end=$'\e[201~'
+    local bp_alt=$'\e[~'
+    token_input="${token_input//"$bp_start"/}"
+    token_input="${token_input//"$bp_end"/}"
+    token_input="${token_input//"$bp_alt"/}"
+    # Remove the longer forms first so the extra trailing ~ is not left behind.
+    token_input="${token_input//'^[[200~~'/}"
+    token_input="${token_input//'^[[201~~'/}"
+    token_input="${token_input//'^[[200~'/}"
+    token_input="${token_input//'^[[201~'/}"
+    token_input="${token_input//'^[[~~'/}"
+    token_input="${token_input//'^[[~'/}"
+
+    # Trim leading/trailing whitespace.
+    token_input="${token_input#"${token_input%%[![:space:]]*}"}"
+    token_input="${token_input%"${token_input##*[![:space:]]}"}"
+    token_input="${token_input%$'\r'}"
+
+    # If the user pasted `sudo cloudflared service install TOKEN`, extract only
+    # the token. This parses text only; the pasted command is never executed.
+    if [[ "$token_input" =~ ^(sudo[[:space:]]+)?cloudflared[[:space:]]+service[[:space:]]+install[[:space:]]+(.+)$ ]]; then
+        tunnel_token="${BASH_REMATCH[2]}"
+    else
+        tunnel_token="$token_input"
+    fi
+
+    # Remove optional matching surrounding quotes without evaluating the input.
+    case "$tunnel_token" in
+        \"*\") tunnel_token="${tunnel_token:1:${#tunnel_token}-2}" ;;
+        '*') tunnel_token="${tunnel_token:1:${#tunnel_token}-2}" ;;
+    esac
+    tunnel_token="${tunnel_token%$'\r'}"
+    tunnel_token="${tunnel_token#"${tunnel_token%%[![:space:]]*}"}"
+    tunnel_token="${tunnel_token%"${tunnel_token##*[![:space:]]}"}"
+
+    if [ -z "$tunnel_token" ]; then
+        status_fail "Cloudflare tunnel token cannot be empty"
+        pause_screen
+        return
+    fi
+
+    # Do not impose an eyJ/base64 format check here. Cloudflare is the authority
+    # that validates the tunnel token, and copied tokens can vary in formatting.
+    if [ -z "$tunnel_token" ]; then
+        status_fail "Cloudflare tunnel token cannot be empty"
+        echo -e "  ${DIM}Paste either the raw token or: sudo cloudflared service install TOKEN${RESET}"
+        pause_screen
+        return
+    fi
+
+    status_ok "Cloudflare tunnel token received"
+    echo -e "  ${DIM}Installing the tunnel service...${RESET}"
+
+    # Do not log the token. Capture only cloudflared's error output so the user
+    # can see why installation failed without exposing the secret.
+    local cf_error="${LOG_DIR}/cloudflared-install-$$.err"
+    rm -f "$cf_error"
+    if ! "${SUDO_CMD[@]}" cloudflared service install "$tunnel_token" >"/dev/null" 2>"$cf_error"; then
+        status_fail "Cloudflare tunnel service installation failed"
+        if [ -s "$cf_error" ]; then
+            echo
+            echo -e "  ${BRIGHT_YELLOW}${BOLD}cloudflared:${RESET}"
+            sed 's/^[[:space:]]*/  /' "$cf_error" | tail -n 12
+            cat "$cf_error" >> "$LOG_FILE" 2>/dev/null || true
+        fi
+        rm -f "$cf_error"
+        echo -e "  ${DIM}The tunnel token itself was not written to the log.${RESET}"
+        pause_screen
+        return
+    fi
+    rm -f "$cf_error"
+
+    status_ok "Cloudflare Tunnel service installed"
+    echo
+    echo -e "  ${BRIGHT_GREEN}${BOLD}Add these exactly in routine in Cloudflare Tunnel:${RESET}"
+    echo -e "  ${DIM}Type:${RESET} https"
+    echo -e "  ${DIM}URL:${RESET} localhost:8443"
+    echo -e "  ${DIM}Enable TLS:${RESET} yes"
+    echo
+    echo -e "  ${WHITE}Panel Settings:${RESET}"
+    echo -e "  ${DIM}ufw-no:${RESET} html"
+    echo -e "  ${DIM}encryption:${RESET} n"
+    echo -e "  ${DIM}assume SSL:${RESET} y"
+    echo -e "  ${DIM}HTTPS request:${RESET} n"
+    echo
+    echo -e "  ${WHITE}For Wings, in routine Cloudflare:${RESET}"
+    echo -e "  ${DIM}Type:${RESET} https"
+    echo -e "  ${DIM}URL:${RESET} localhost"
+    echo -e "  ${DIM}Enable TLS:${RESET} yes"
+    echo
+    status_ok "Cloudflare Tunnel setup is done"
+    echo -e "  ${DIM}You are ready to continue.${RESET}"
+    pause_screen
+}
+
+delete_cloudflare_tunnel() {
+    header
+    section_title ".TOOLS • DELETE CLOUDFLARE TUNNEL"
+
+    echo -e "  ${YELLOW}This removes the existing cloudflared tunnel service.${RESET}"
+    echo
+
+    if "${SUDO_CMD[@]}" cloudflared service uninstall >>"$LOG_FILE" 2>&1; then
+        status_ok "Cloudflare Tunnel service deleted"
+    else
+        status_warn "Cloudflare Tunnel service was not installed or could not be removed"
+    fi
+
+    echo
+    echo -e "  ${DIM}If you also want to delete the Cloudflare tunnel itself, enter its name or ID.${RESET}"
+    echo -e "  ${DIM}Leave empty to only remove the local service.${RESET}"
+    echo
+    local tunnel_name
+    read -r -p "  Tunnel name/ID [optional]: " tunnel_name
+
+    if [ -n "$tunnel_name" ]; then
+        read -r -p "  Delete tunnel '$tunnel_name' from Cloudflare? [y/N]: " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            if cloudflared tunnel delete "$tunnel_name" >>"$LOG_FILE" 2>&1; then
+                status_ok "Cloudflare tunnel deleted: $tunnel_name"
+            else
+                status_fail "Could not delete tunnel: $tunnel_name"
+                echo -e "  ${DIM}See: ${LOG_FILE}${RESET}"
+            fi
+        else
+            status_warn "Tunnel deletion cancelled"
+        fi
+    fi
+
+    pause_screen
+}
+
 tools_menu() {
     while true; do
         header
@@ -785,18 +963,46 @@ tools_menu() {
         echo -e "  ${CYAN}01${RESET}  ${WHITE}Playit${RESET}"
         echo -e "      ${DIM}Install Playit tunnel service${RESET}"
         echo
+        echo -e "  ${CYAN}02${RESET}  ${WHITE}Cloudflare Tunnel${RESET}"
+        echo -e "      ${DIM}Install or delete Cloudflare Tunnel${RESET}"
+        echo
         echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
         echo
 
         read -r -p "  Select › " choice
 
         case "$choice" in
-            1) install_playit ;;
+            1|01) install_playit ;;
+            2|02)
+                while true; do
+                    header
+                    section_title ".TOOLS • CLOUDFLARE TUNNEL"
+
+                    echo -e "  ${CYAN}01${RESET}  ${WHITE}Install Tunnel${RESET}"
+                    echo -e "      ${DIM}Install cloudflared and configure the tunnel service${RESET}"
+                    echo
+                    echo -e "  ${CYAN}02${RESET}  ${WHITE}Delete Tunnel${RESET}"
+                    echo -e "      ${DIM}Delete the existing Cloudflare Tunnel service/tunnel${RESET}"
+                    echo
+                    echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
+                    echo
+
+                    read -r -p "  Select › " tunnel_choice
+
+                    case "$tunnel_choice" in
+                        1|01) install_cloudflare_tunnel ;;
+                        2|02) delete_cloudflare_tunnel ;;
+                        0|00) break ;;
+                        *) status_fail "Invalid selection"; sleep 1 ;;
+                    esac
+                done
+                ;;
             0|00) return ;;
             *) status_fail "Invalid selection"; sleep 1 ;;
         esac
     done
 }
+
 
 # ============================================================
 # DASHBOARDS
