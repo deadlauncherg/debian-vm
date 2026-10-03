@@ -819,23 +819,6 @@ install_cloudflare_tunnel() {
     read -r -p "  Token or full install command: " token_input
     echo
 
-    # Remove terminal bracketed-paste markers before parsing the token.
-    # Some terminals pass the real ESC sequences, while others expose them
-    # literally as ^[[200~ ... ^[[201~ (sometimes with an extra ~).
-    local bp_start=$'\e[200~'
-    local bp_end=$'\e[201~'
-    local bp_alt=$'\e[~'
-    token_input="${token_input//"$bp_start"/}"
-    token_input="${token_input//"$bp_end"/}"
-    token_input="${token_input//"$bp_alt"/}"
-    # Remove the longer forms first so the extra trailing ~ is not left behind.
-    token_input="${token_input//'^[[200~~'/}"
-    token_input="${token_input//'^[[201~~'/}"
-    token_input="${token_input//'^[[200~'/}"
-    token_input="${token_input//'^[[201~'/}"
-    token_input="${token_input//'^[[~~'/}"
-    token_input="${token_input//'^[[~'/}"
-
     # Trim leading/trailing whitespace.
     token_input="${token_input#"${token_input%%[![:space:]]*}"}"
     token_input="${token_input%"${token_input##*[![:space:]]}"}"
@@ -918,6 +901,169 @@ install_cloudflare_tunnel() {
     pause_screen
 }
 
+# ---------- PUFFERPANEL ----------
+install_pufferpanel() {
+    header
+    section_title ".TOOLS • PUFFERPANEL"
+
+    echo -e "  ${WHITE}PufferPanel installer${RESET}"
+    echo -e "  ${DIM}PufferPanel will be configured for web port 8081.${RESET}"
+    echo
+
+    echo -e "  ${BRIGHT_WHITE}${BOLD}Install Cloudflare Tunnel first?${RESET}"
+    echo -e "  ${DIM}If Yes, cloudflared will be installed and you can paste either:${RESET}"
+    echo -e "  ${DIM}• the raw tunnel token${RESET}"
+    echo -e "  ${DIM}• sudo cloudflared service install TOKEN${RESET}"
+    echo
+
+    local cf_answer
+    read -r -p "  Install Cloudflare Tunnel? [y/N]: " cf_answer
+    echo
+
+    if [[ "$cf_answer" =~ ^[Yy]$ ]]; then
+        # Reuse the existing Cloudflare installer. It keeps the token visible
+        # while never writing the token itself to the installer log.
+        install_cloudflare_tunnel || {
+            status_fail "Cloudflare Tunnel installation failed. PufferPanel installation cancelled."
+            pause_screen
+            return
+        }
+        echo
+    else
+        status_ok "Cloudflare Tunnel skipped"
+        echo
+    fi
+
+    echo -e "  ${BRIGHT_WHITE}${BOLD}Installing PufferPanel${RESET}"
+    echo
+
+    run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || { pause_screen; return; }
+    run_silent "Installing PufferPanel dependencies" "${SUDO_CMD[@]}" apt-get install -y curl gnupg apt-transport-https || { pause_screen; return; }
+
+    run_silent "Creating PufferPanel keyring directory" \
+        "${SUDO_CMD[@]}" mkdir -p /etc/apt/keyrings || { pause_screen; return; }
+
+    local puffer_key="/etc/apt/keyrings/pufferpanel.gpg"
+    local puffer_repo="/etc/apt/sources.list.d/pufferpanel.sources"
+
+    if ! curl -fsSL https://packagecloud.io/pufferpanel/pufferpanel/gpgkey \
+        | "${SUDO_CMD[@]}" gpg --dearmor --yes \
+            | "${SUDO_CMD[@]}" tee "$puffer_key" >/dev/null 2>>"$LOG_FILE"; then
+        status_fail "Failed to add PufferPanel GPG key"
+        pause_screen
+        return
+    fi
+    status_ok "PufferPanel GPG key added"
+
+    cat <<'EOF' | "${SUDO_CMD[@]}" tee "$puffer_repo" >/dev/null
+X-Repolib-Name: PufferPanel
+Types: deb
+URIs: https://packagecloud.io/pufferpanel/pufferpanel/any/
+Suites: any
+Components: main
+Signed-By: /etc/apt/keyrings/pufferpanel.gpg
+EOF
+
+    status_ok "PufferPanel repository added"
+
+    run_silent "Refreshing PufferPanel repository" "${SUDO_CMD[@]}" apt-get update || { pause_screen; return; }
+    run_silent "Installing PufferPanel" "${SUDO_CMD[@]}" apt-get install -y pufferpanel || { pause_screen; return; }
+
+    # PufferPanel defaults to 0.0.0.0:8080. Change the web listener to 8081.
+    # Keep this limited to the documented web.host value so unrelated settings
+    # are not modified.
+    local puffer_config="/etc/pufferpanel/config.json"
+    if "${SUDO_CMD[@]}" test -f "$puffer_config"; then
+        if "${SUDO_CMD[@]}" sed -i \
+            's/"host"[[:space:]]*:[[:space:]]*"0\.0\.0\.0:8080"/"host": "0.0.0.0:8081"/' \
+            "$puffer_config"; then
+            status_ok "PufferPanel web port set to 8081"
+        else
+            status_fail "Could not change PufferPanel web port"
+            pause_screen
+            return
+        fi
+    else
+        status_warn "PufferPanel config.json was not found; leaving package defaults unchanged"
+    fi
+
+    # PufferPanel packages ship pufferpanel.service, but LAPIO BHAI can also
+    # be executed inside containers where systemd is not PID 1. In that case
+    # `systemctl enable` fails even though PufferPanel itself is installed.
+    # Detect that situation before calling systemctl and use PufferPanel's
+    # built-in runService command instead.
+    local puffer_systemd=0
+    if command -v systemctl >/dev/null 2>&1 \
+        && [ -d /run/systemd/system ] \
+        && [ "$(ps -p 1 -o comm= 2>/dev/null || true)" = "systemd" ]; then
+        puffer_systemd=1
+    fi
+
+    if [ "$puffer_systemd" -eq 1 ]; then
+        run_silent "Reloading systemd" "${SUDO_CMD[@]}" systemctl daemon-reload || { pause_screen; return; }
+        run_silent "Enabling PufferPanel service" "${SUDO_CMD[@]}" systemctl enable pufferpanel || { pause_screen; return; }
+        run_silent "Starting PufferPanel service" "${SUDO_CMD[@]}" systemctl restart pufferpanel || { pause_screen; return; }
+        status_ok "PufferPanel service is running"
+    else
+        status_warn "systemd is not available; using PufferPanel runService mode"
+
+        # Stop an older manually-started instance if we know its PID.
+        local puffer_pid_file="/run/pufferpanel.pid"
+        if [ -f "$puffer_pid_file" ]; then
+            local old_pid
+            old_pid="$(cat "$puffer_pid_file" 2>/dev/null || true)"
+            if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+                "${SUDO_CMD[@]}" kill "$old_pid" 2>/dev/null || true
+                sleep 1
+            fi
+            "${SUDO_CMD[@]}" rm -f "$puffer_pid_file" 2>/dev/null || true
+        fi
+
+        local puffer_log="/var/log/pufferpanel.log"
+        "${SUDO_CMD[@]}" bash -c \
+            'nohup /usr/sbin/pufferpanel runService >>/var/log/pufferpanel.log 2>&1 </dev/null & echo $! >/run/pufferpanel.pid'
+        sleep 2
+
+        local puffer_pid
+        puffer_pid="$("${SUDO_CMD[@]}" cat "$puffer_pid_file" 2>/dev/null || true)"
+        if [[ "$puffer_pid" =~ ^[0-9]+$ ]] && kill -0 "$puffer_pid" 2>/dev/null; then
+            status_ok "PufferPanel started with runService"
+            echo -e "  ${DIM}Runtime log:${RESET} ${CYAN}${puffer_log}${RESET}"
+        else
+            status_fail "PufferPanel failed to start"
+            echo -e "  ${DIM}Check:${RESET} ${CYAN}${puffer_log}${RESET}"
+            pause_screen
+            return
+        fi
+    fi
+
+    echo
+    echo -e "  ${BRIGHT_WHITE}${BOLD}Create PufferPanel admin user${RESET}"
+    echo -e "  ${DIM}The official PufferPanel command will now open its interactive prompts.${RESET}"
+    echo -e "  ${DIM}Make sure to answer Y when it asks whether the user is an admin.${RESET}"
+    echo
+
+    # Keep this interactive: PufferPanel asks for username, password and admin
+    # confirmation. The command itself and any password are not copied to the log.
+    if "${SUDO_CMD[@]}" pufferpanel user add; then
+        echo
+        status_ok "PufferPanel user created"
+    else
+        echo
+        status_fail "PufferPanel user creation failed or was cancelled"
+        echo -e "  ${DIM}You can retry later with: sudo pufferpanel user add${RESET}"
+        pause_screen
+        return
+    fi
+
+    echo
+    status_ok "PufferPanel installation completed"
+    echo -e "  ${DIM}Panel:${RESET} ${CYAN}http://YOUR_SERVER_IP:8081${RESET}"
+    echo -e "  ${DIM}Service:${RESET} ${CYAN}pufferpanel${RESET}"
+    echo
+    pause_screen
+}
+
 delete_cloudflare_tunnel() {
     header
     section_title ".TOOLS • DELETE CLOUDFLARE TUNNEL"
@@ -966,6 +1112,9 @@ tools_menu() {
         echo -e "  ${CYAN}02${RESET}  ${WHITE}Cloudflare Tunnel${RESET}"
         echo -e "      ${DIM}Install or delete Cloudflare Tunnel${RESET}"
         echo
+        echo -e "  ${CYAN}03${RESET}  ${WHITE}PufferPanel${RESET}"
+        echo -e "      ${DIM}Install PufferPanel on web port 8081${RESET}"
+        echo
         echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
         echo
 
@@ -997,6 +1146,7 @@ tools_menu() {
                     esac
                 done
                 ;;
+            3|03) install_pufferpanel ;;
             0|00) return ;;
             *) status_fail "Invalid selection"; sleep 1 ;;
         esac
