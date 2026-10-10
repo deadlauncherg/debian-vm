@@ -412,6 +412,8 @@ create_cloud_init() {
     local meta_data="$VPS_DIR/meta-data"
     local seed="$VPS_DIR/seed.img"
 
+    # Ubuntu cloud images boot with systemd as PID 1. Install Docker in the
+    # guest itself and explicitly enable its services on first boot.
     cat > "$user_data" <<EOF
 #cloud-config
 hostname: lapio-vps
@@ -421,7 +423,7 @@ ssh_deletekeys: false
 users:
   - default
   - name: ${USER_NAME}
-    groups: [sudo]
+    groups: [sudo, docker]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
@@ -430,14 +432,24 @@ chpasswd:
     ${USER_NAME}:${USER_PASS}
   expire: false
 package_update: true
+package_upgrade: false
 packages:
   - sudo
+  - systemd
+  - dbus
   - curl
   - wget
   - git
   - unzip
   - htop
   - lsof
+  - ca-certificates
+  - docker.io
+  - containerd
+runcmd:
+  - [bash, -lc, "systemctl enable containerd.service docker.service"]
+  - [bash, -lc, "systemctl start containerd.service docker.service"]
+  - [bash, -lc, "usermod -aG docker '${USER_NAME}'"]
 EOF
 
     cat > "$meta_data" <<EOF
@@ -684,7 +696,7 @@ vps_menu() {
         echo -e "      ${DIM}Real KVM VPS when systemd-detect-virt reports kvm${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
-        echo -e "      ${DIM}QEMU TCG software emulation${RESET}"
+        echo -e "      ${DIM}QEMU TCG software emulation; Docker setup on first boot${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}03${RESET}  ${WHITE}Start Existing VPS${RESET}"
         echo -e "      ${DIM}Boot the saved VPS configuration${RESET}"
