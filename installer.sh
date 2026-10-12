@@ -27,7 +27,7 @@ BRIGHT_YELLOW=$'\033[93m'
 BRIGHT_MAGENTA=$'\033[95m'
 
 APP_NAME="LAPIOPLAYS"
-APP_VERSION="2.8"
+APP_VERSION="2.9"
 LOG_DIR="${HOME}/.lapio-bhai"
 LOG_FILE="${LOG_DIR}/installer.log"
 VPS_DIR="${HOME}/.lapio-bhai/vps"
@@ -113,10 +113,10 @@ get_disk_stats() {
 }
 
 get_cpu_percent() {
-    local load cores percent
-    load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
+    local load_avg_value cores percent
+    load_avg_value="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
     cores="$(nproc 2>/dev/null || echo 1)"
-    percent="$(awk -v loadavg_value="$load" -v cores="$cores" 'BEGIN {
+    percent="$(awk -v loadavg_value="$load_avg_value" -v cores="$cores" 'BEGIN {
         if (cores < 1) cores=1;
         p=(loadavg_value/cores)*100;
         if (p > 100) p=100;
@@ -431,17 +431,17 @@ install_vps_dependencies() {
             pkgmgr=apt
             run_silent "Updating package index (${os_name})" "${SUDO_CMD[@]}" apt-get update || return 1
             run_silent "Installing QEMU/cloud-init tools" "${SUDO_CMD[@]}" apt-get install -y \
-                qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates coreutils timeout || return 1
+                qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates || return 1
             ;;
         fedora)
             pkgmgr=dnf
             run_silent "Installing QEMU/cloud-init tools (${os_name})" "${SUDO_CMD[@]}" dnf install -y \
-                qemu-system-x86-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils timeout || return 1
+                qemu-system-x86-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils || return 1
             ;;
         centos|rhel|rocky|almalinux|ol)
             if command -v dnf >/dev/null 2>&1; then pkgmgr=dnf; else pkgmgr=yum; fi
             run_silent "Installing QEMU/cloud-init tools (${os_name})" "${SUDO_CMD[@]}" "$pkgmgr" install -y \
-                qemu-kvm-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils timeout || {
+                qemu-kvm-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils || {
                 status_fail "Some RHEL-family versions name/package QEMU differently. Check ${LOG_FILE}."
                 return 1
             }
@@ -592,19 +592,16 @@ start_vps() {
     local accel_args=()
     local cpu_args=()
     if [ "$VPS_MODE" = "virtualization" ]; then
-        if ! kvm_detection_message; then
+        if kvm_detection_message; then
+            accel_args=(-enable-kvm)
+            cpu_args=(-cpu host)
             echo
-            status_warn "Real KVM is not available for this VPS."
-            echo -e "  ${DIM}Use option 02 (.VPS without Virtualisation) to run with QEMU TCG.${RESET}"
-            echo
-            echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
-            read -r _
-            return 0
+            status_ok "Starting with real KVM hardware acceleration"
+        else
+            status_warn "KVM is unavailable; automatically falling back to QEMU TCG software emulation."
+            accel_args=(-accel tcg,thread=multi)
+            cpu_args=(-cpu max)
         fi
-        accel_args=(-enable-kvm)
-        cpu_args=(-cpu host)
-        echo
-        status_ok "Starting with real KVM hardware acceleration"
     else
         echo -e "  ${BRIGHT_YELLOW}${BOLD}● SOFTWARE EMULATION${RESET}"
         echo -e "  ${DIM}QEMU TCG mode selected. No KVM is required.${RESET}"
@@ -673,10 +670,21 @@ create_vps() {
         pause_screen
         return 1
     fi
-    if (( host_ram_gb > 1 && RAM_GB > host_ram_gb - reserve_ram_gb )); then
-        status_fail "${RAM_GB} GB exceeds the safe limit for this ${host_ram_gb} GB host. Reduce guest RAM to $((host_ram_gb - reserve_ram_gb)) GB or less."
+    if (( host_ram_gb > 0 && RAM_GB > host_ram_gb )); then
+        status_fail "${RAM_GB} GB exceeds the detected ${host_ram_gb} GB host RAM. Choose ${host_ram_gb} GB or less."
         pause_screen
         return 1
+    fi
+    if (( host_ram_gb > 0 && RAM_GB >= host_ram_gb )); then
+        status_warn "You selected all detected host RAM. The outer VPS may freeze or be killed by its OOM manager."
+        read -r -p "  Continue with ${RAM_GB} GB anyway? [y/N]: " ram_confirm
+        if [[ ! "$ram_confirm" =~ ^[Yy]$ ]]; then
+            status_warn "Choose a smaller RAM value and try again."
+            pause_screen
+            return 1
+        fi
+    elif (( host_ram_gb > 1 && RAM_GB > host_ram_gb - reserve_ram_gb )); then
+        status_warn "This leaves less than ${reserve_ram_gb} GB for the host; memory pressure may make the server unstable."
     fi
 
     read -r -p "  CPU cores [${CPU_CORES}]: " value
@@ -702,10 +710,9 @@ create_vps() {
 
     if [ "$VPS_MODE" = "virtualization" ] && ! kvm_detection_message; then
         echo
-        status_warn "Option 01 needs KVM exposed by the host or VPS provider."
-        echo -e "  ${DIM}Choose option 02 to run with slower QEMU TCG software emulation.${RESET}"
-        pause_screen
-        return
+        status_warn "KVM is unavailable. Option 01 will continue using QEMU TCG software emulation instead."
+        VPS_MODE="no_virtualization"
+        save_vps_env
     fi
 
     download_vps_image || { pause_screen; return; }
@@ -740,7 +747,7 @@ vps_no_virtualization() {
     save_vps_env
 
     status_ok "Software emulation mode selected"
-    echo -e "  ${DIM}No /dev/kvm requirement. QEMU will use TCG emulation.${RESET}"
+    echo -e "  ${DIM}No /dev/kvm requirement. QEMU uses TCG software emulation.${RESET}"
     echo
 
     create_vps
@@ -786,7 +793,7 @@ vps_menu() {
         echo
 
         echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}VPS with Virtualisation${RESET}"
-        echo -e "      ${DIM}Uses KVM only when QEMU successfully initializes it${RESET}"
+        echo -e "      ${DIM}Uses KVM if available; otherwise falls back to TCG${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
         echo -e "      ${DIM}QEMU TCG software emulation${RESET}"
