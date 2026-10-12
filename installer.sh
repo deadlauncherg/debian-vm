@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # ============================================================
-#                         LAPIO BHAI
+#                         LAPIOPLAYS
 #                        Vps Manager
 # ============================================================
 
@@ -26,8 +26,8 @@ BRIGHT_RED=$'\033[91m'
 BRIGHT_YELLOW=$'\033[93m'
 BRIGHT_MAGENTA=$'\033[95m'
 
-APP_NAME="LAPIO BHAI"
-APP_VERSION="2.5"
+APP_NAME="LAPIOPLAYS"
+APP_VERSION="2.8"
 LOG_DIR="${HOME}/.lapio-bhai"
 LOG_FILE="${LOG_DIR}/installer.log"
 VPS_DIR="${HOME}/.lapio-bhai/vps"
@@ -116,9 +116,9 @@ get_cpu_percent() {
     local load cores percent
     load="$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)"
     cores="$(nproc 2>/dev/null || echo 1)"
-    percent="$(awk -v load="$load" -v cores="$cores" 'BEGIN {
+    percent="$(awk -v loadavg_value="$load" -v cores="$cores" 'BEGIN {
         if (cores < 1) cores=1;
-        p=(load/cores)*100;
+        p=(loadavg_value/cores)*100;
         if (p > 100) p=100;
         if (p < 0) p=0;
         printf "%d", p
@@ -236,7 +236,7 @@ header() {
     clear
     echo
     echo -e "  ${BRIGHT_CYAN}${BOLD}╭────────────────────────────────────────────────────────────╮${RESET}"
-    echo -e "  ${BRIGHT_CYAN}${BOLD}│${RESET}  ${BRIGHT_MAGENTA}${BOLD}LAPIO BHAI${RESET}  ${DIM}•${RESET}  ${BRIGHT_WHITE}SERVER INSTALLER${RESET}  ${DIM}v${APP_VERSION}${RESET}       ${BRIGHT_CYAN}${BOLD}│${RESET}"
+    echo -e "  ${BRIGHT_CYAN}${BOLD}│${RESET}  ${BRIGHT_MAGENTA}${BOLD}LAPIOPLAYS${RESET}  ${DIM}•${RESET}  ${BRIGHT_WHITE}SERVER INSTALLER${RESET}  ${DIM}v${APP_VERSION}${RESET}       ${BRIGHT_CYAN}${BOLD}│${RESET}"
     echo -e "  ${BRIGHT_CYAN}${BOLD}╰────────────────────────────────────────────────────────────╯${RESET}"
     echo
 }
@@ -281,9 +281,17 @@ VPS_MODE=${VPS_MODE}
 EOF
 }
 
-# Detect the host virtualization environment.
-# For the "WITH VIRTUALISATION" option we require systemd-detect-virt
-# to report KVM AND /dev/kvm to be usable. Option 02 is always the TCG fallback.
+# Detect the host OS. systemd-detect-virt describes the environment the host
+# runs inside; it does NOT tell us whether QEMU can use KVM.
+detect_host_os() {
+    if [ -r /etc/os-release ]; then
+        . /etc/os-release
+        printf '%s|%s|%s\n' "${ID:-unknown}" "${VERSION_ID:-unknown}" "${PRETTY_NAME:-Unknown Linux}"
+    else
+        printf '%s|%s|%s\n' "unknown" "unknown" "Unknown Linux"
+    fi
+}
+
 detect_virt_type() {
     if command -v systemd-detect-virt >/dev/null 2>&1; then
         systemd-detect-virt 2>/dev/null || true
@@ -292,35 +300,67 @@ detect_virt_type() {
     fi
 }
 
+# Fast check for the main-menu status line. This avoids starting a QEMU probe
+# every time the menu redraws; the full probe is done before option 01 starts.
 detect_virtualization() {
-    local virt_type
-    virt_type="$(detect_virt_type)"
-
-    if [ "$virt_type" = "kvm" ] && [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-        echo "available"
+    qemu_bin >/dev/null 2>&1 || { printf '%s\n' unavailable; return; }
+    [ -c /dev/kvm ] || { printf '%s\n' unavailable; return; }
+    if "${SUDO_CMD[@]}" test -r /dev/kvm && "${SUDO_CMD[@]}" test -w /dev/kvm; then
+        printf '%s\n' available
     else
-        echo "unavailable"
+        printf '%s\n' unavailable
     fi
 }
 
-kvm_detection_message() {
-    local virt_type
-    virt_type="$(detect_virt_type)"
+# A real, short QEMU probe verifies KVM initialization. Exit 124 is expected:
+# timeout terminates QEMU after it successfully remains running for 3 seconds.
+qemu_bin() {
+    if command -v qemu-system-x86_64 >/dev/null 2>&1; then command -v qemu-system-x86_64; return 0; fi
+    if command -v qemu-kvm >/dev/null 2>&1; then command -v qemu-kvm; return 0; fi
+    return 1
+}
 
-    if [ "$virt_type" = "kvm" ] && [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-        echo -e "  ${BRIGHT_GREEN}${BOLD}● KVM VIRTUALISATION AVAILABLE${RESET}"
-        echo -e "  ${DIM}systemd-detect-virt:${RESET} ${GREEN}${virt_type}${RESET}"
-        echo -e "  ${DIM}/dev/kvm:${RESET} ${GREEN}ready${RESET}"
+probe_kvm_acceleration() {
+    local qemu; qemu="$(qemu_bin)" || return 1
+    [ -c /dev/kvm ] || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+
+    local output rc
+    if output="$(timeout 3s "${SUDO_CMD[@]}" "$qemu" \
+        -machine none,accel=kvm -nodefaults -display none -S 2>&1)"; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    if [ "$rc" -eq 124 ]; then
+        return 0
+    fi
+    if [ -n "$output" ]; then
+        printf '%s\n' "$output" >> "$LOG_FILE"
+    fi
+    return 1
+}
+
+kvm_detection_message() {
+    local host_os virt_type kvm_status
+    host_os="$(detect_host_os | awk -F'|' '{print $3}')"
+    virt_type="$(detect_virt_type)"
+    kvm_status="unavailable"
+    if probe_kvm_acceleration; then kvm_status="available"; fi
+
+    echo -e "  ${DIM}Host OS:${RESET} ${CYAN}${host_os}${RESET}"
+    echo -e "  ${DIM}Host environment (informational):${RESET} ${CYAN}${virt_type:-unknown}${RESET}"
+
+    if [ "$kvm_status" = available ]; then
+        echo -e "  ${BRIGHT_GREEN}${BOLD}● QEMU KVM ACCELERATION AVAILABLE${RESET}"
+        echo -e "  ${DIM}QEMU successfully initialized KVM using /dev/kvm.${RESET}"
         return 0
     fi
 
-    echo -e "  ${BRIGHT_YELLOW}${BOLD}● KVM VIRTUALISATION UNAVAILABLE${RESET}"
-    echo -e "  ${DIM}systemd-detect-virt:${RESET} ${YELLOW}${virt_type:-unknown}${RESET}"
-    if [ -e /dev/kvm ]; then
-        echo -e "  ${DIM}/dev/kvm:${RESET} ${YELLOW}not usable for this mode${RESET}"
-    else
-        echo -e "  ${DIM}/dev/kvm:${RESET} ${YELLOW}not available${RESET}"
-    fi
+    echo -e "  ${BRIGHT_YELLOW}${BOLD}● QEMU KVM ACCELERATION UNAVAILABLE${RESET}"
+    echo -e "  ${DIM}KVM probe failed. Check /dev/kvm, permissions, host BIOS and provider nested-virtualization settings.${RESET}"
+    echo -e "  ${DIM}Details, if any, were appended to:${RESET} ${CYAN}${LOG_FILE}${RESET}"
     return 1
 }
 
@@ -381,10 +421,55 @@ vps_image_in_use() {
 }
 
 install_vps_dependencies() {
-    run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || return 1
-    run_silent "Installing VPS packages" "${SUDO_CMD[@]}" apt-get install -y \
-        qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates \
-        || return 1
+    local os_id os_name pkgmgr
+    IFS='|' read -r os_id _ os_name <<< "$(detect_host_os)"
+    os_id="${os_id,,}"
+    echo -e "  ${DIM}Auto-detected host OS:${RESET} ${CYAN}${os_name}${RESET}"
+
+    case "$os_id" in
+        ubuntu|debian|linuxmint|pop|elementary|kali|linuxlite|zorin)
+            pkgmgr=apt
+            run_silent "Updating package index (${os_name})" "${SUDO_CMD[@]}" apt-get update || return 1
+            run_silent "Installing QEMU/cloud-init tools" "${SUDO_CMD[@]}" apt-get install -y \
+                qemu-system-x86 qemu-utils wget cloud-image-utils curl lsof ca-certificates coreutils timeout || return 1
+            ;;
+        fedora)
+            pkgmgr=dnf
+            run_silent "Installing QEMU/cloud-init tools (${os_name})" "${SUDO_CMD[@]}" dnf install -y \
+                qemu-system-x86-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils timeout || return 1
+            ;;
+        centos|rhel|rocky|almalinux|ol)
+            if command -v dnf >/dev/null 2>&1; then pkgmgr=dnf; else pkgmgr=yum; fi
+            run_silent "Installing QEMU/cloud-init tools (${os_name})" "${SUDO_CMD[@]}" "$pkgmgr" install -y \
+                qemu-kvm-core qemu-img wget cloud-utils curl lsof ca-certificates coreutils timeout || {
+                status_fail "Some RHEL-family versions name/package QEMU differently. Check ${LOG_FILE}."
+                return 1
+            }
+            ;;
+        *)
+            status_fail "Unsupported automatic package setup for ${os_name} (ID=${os_id})."
+            echo -e "  ${DIM}Detected OS correctly; install QEMU, qemu-img, cloud-init/cloud-localds, wget, curl, lsof and timeout using its package manager, then retry.${RESET}"
+            return 1
+            ;;
+    esac
+
+    local missing=0 cmd
+    for cmd in qemu-img wget curl timeout; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            status_fail "Required command not found after ${pkgmgr} install: ${cmd}"
+            missing=1
+        fi
+    done
+    if ! command -v qemu-system-x86_64 >/dev/null 2>&1 && ! command -v qemu-kvm >/dev/null 2>&1; then
+        status_fail "QEMU x86 system emulator not found; package names vary by distro/release."
+        missing=1
+    fi
+    if ! command -v cloud-localds >/dev/null 2>&1; then
+        status_fail "cloud-localds is missing (usually supplied by cloud-image-utils/cloud-utils)."
+        missing=1
+    fi
+    [ "$missing" -eq 0 ] || return 1
+    status_ok "VPS dependencies are ready for ${os_name}"
 }
 
 download_vps_image() {
@@ -412,8 +497,6 @@ create_cloud_init() {
     local meta_data="$VPS_DIR/meta-data"
     local seed="$VPS_DIR/seed.img"
 
-    # Ubuntu cloud images boot with systemd as PID 1. Install Docker in the
-    # guest itself and explicitly enable its services on first boot.
     cat > "$user_data" <<EOF
 #cloud-config
 hostname: lapio-vps
@@ -423,7 +506,7 @@ ssh_deletekeys: false
 users:
   - default
   - name: ${USER_NAME}
-    groups: [sudo, docker]
+    groups: [sudo]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
@@ -432,24 +515,14 @@ chpasswd:
     ${USER_NAME}:${USER_PASS}
   expire: false
 package_update: true
-package_upgrade: false
 packages:
   - sudo
-  - systemd
-  - dbus
   - curl
   - wget
   - git
   - unzip
   - htop
   - lsof
-  - ca-certificates
-  - docker.io
-  - containerd
-runcmd:
-  - [bash, -lc, "systemctl enable containerd.service docker.service"]
-  - [bash, -lc, "systemctl start containerd.service docker.service"]
-  - [bash, -lc, "usermod -aG docker '${USER_NAME}'"]
 EOF
 
     cat > "$meta_data" <<EOF
@@ -550,8 +623,10 @@ start_vps() {
 
     # QEMU is intentionally run in the foreground so the VPS stays attached
     # to this terminal exactly like the original VPS implementation.
+    local qemu_command
+    qemu_command="$(qemu_bin)" || { status_fail "QEMU binary not found"; pause_screen; return 1; }
     set +e
-    "${SUDO_CMD[@]}" qemu-system-x86_64 \
+    "${SUDO_CMD[@]}" "$qemu_command" \
         "${accel_args[@]}" \
         "${cpu_args[@]}" \
         -m "${RAM_GB}G" \
@@ -585,8 +660,24 @@ create_vps() {
 
     load_vps_env
 
+    local host_ram_gb reserve_ram_gb
+    host_ram_gb="$(awk '/MemTotal:/ {printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo 0)"
+    host_ram_gb="${host_ram_gb:-0}"
+    reserve_ram_gb=1
+    echo -e "  ${DIM}Detected host RAM:${RESET} ${CYAN}${host_ram_gb} GB${RESET}"
+    echo -e "  ${DIM}For stability, keep at least ${reserve_ram_gb} GB for the host. Guest RAM cannot create extra physical memory.${RESET}"
     read -r -p "  RAM in GB [${RAM_GB}]: " value
     RAM_GB="${value:-$RAM_GB}"
+    if ! [[ "$RAM_GB" =~ ^[1-9][0-9]*$ ]]; then
+        status_fail "RAM must be a positive whole number of GB."
+        pause_screen
+        return 1
+    fi
+    if (( host_ram_gb > 1 && RAM_GB > host_ram_gb - reserve_ram_gb )); then
+        status_fail "${RAM_GB} GB exceeds the safe limit for this ${host_ram_gb} GB host. Reduce guest RAM to $((host_ram_gb - reserve_ram_gb)) GB or less."
+        pause_screen
+        return 1
+    fi
 
     read -r -p "  CPU cores [${CPU_CORES}]: " value
     CPU_CORES="${value:-$CPU_CORES}"
@@ -608,6 +699,15 @@ create_vps() {
     echo
 
     install_vps_dependencies || { pause_screen; return; }
+
+    if [ "$VPS_MODE" = "virtualization" ] && ! kvm_detection_message; then
+        echo
+        status_warn "Option 01 needs KVM exposed by the host or VPS provider."
+        echo -e "  ${DIM}Choose option 02 to run with slower QEMU TCG software emulation.${RESET}"
+        pause_screen
+        return
+    fi
+
     download_vps_image || { pause_screen; return; }
     create_cloud_init || { pause_screen; return; }
 
@@ -623,19 +723,8 @@ vps_virtualization() {
     load_vps_env
     VPS_MODE="virtualization"
 
-    echo -e "  ${DIM}Checking host virtualisation with:${RESET} ${CYAN}systemd-detect-virt${RESET}"
+    echo -e "  ${DIM}Host OS detection and the QEMU KVM test will run during setup.${RESET}"
     echo
-
-    if ! kvm_detection_message; then
-        echo
-        status_warn "Option 01 requires real KVM."
-        echo -e "  ${DIM}No VPS will be created in KVM mode.${RESET}"
-        echo -e "  ${DIM}Choose option 02 to use QEMU TCG without KVM.${RESET}"
-        echo
-        echo -e "  ${BRIGHT_CYAN}Press ENTER to return to the VPS menu...${RESET}"
-        read -r _
-        return 0
-    fi
 
     save_vps_env
     create_vps
@@ -691,12 +780,16 @@ vps_menu() {
     while true; do
         header
         section_title ".VPS"
+        local detected_id detected_version detected_name
+        IFS='|' read -r detected_id detected_version detected_name <<< "$(detect_host_os)"
+        echo -e "  ${DIM}Detected OS:${RESET} ${CYAN}${detected_name} (${detected_id} ${detected_version})${RESET}"
+        echo
 
         echo -e "  ${BRIGHT_CYAN}${BOLD}01${RESET}  ${WHITE}VPS with Virtualisation${RESET}"
-        echo -e "      ${DIM}Real KVM VPS when systemd-detect-virt reports kvm${RESET}"
+        echo -e "      ${DIM}Uses KVM only when QEMU successfully initializes it${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}02${RESET}  ${WHITE}VPS without Virtualisation${RESET}"
-        echo -e "      ${DIM}QEMU TCG software emulation; Docker setup on first boot${RESET}"
+        echo -e "      ${DIM}QEMU TCG software emulation${RESET}"
         echo
         echo -e "  ${BRIGHT_CYAN}${BOLD}03${RESET}  ${WHITE}Start Existing VPS${RESET}"
         echo -e "      ${DIM}Boot the saved VPS configuration${RESET}"
@@ -999,7 +1092,7 @@ EOF
         status_warn "PufferPanel config.json was not found; leaving package defaults unchanged"
     fi
 
-    # PufferPanel packages ship pufferpanel.service, but LAPIO BHAI can also
+    # PufferPanel packages ship pufferpanel.service, but LAPIOPLAYS can also
     # be executed inside containers where systemd is not PID 1. In that case
     # `systemctl enable` fails even though PufferPanel itself is installed.
     # Detect that situation before calling systemctl and use PufferPanel's
@@ -1113,6 +1206,71 @@ delete_cloudflare_tunnel() {
     pause_screen
 }
 
+install_proxmox_container() {
+    header
+    section_title ".TOOLS • PROXMOX VE (DOCKER)"
+    echo -e "  ${DIM}This runs a community Proxmox-in-Docker image, not a supported full Proxmox host install.${RESET}"
+    echo -e "  ${DIM}It needs Docker and privileged-container access; nested virtualization and systemd may not work on every VPS.${RESET}"
+    echo
+
+    if ! command -v docker >/dev/null 2>&1; then
+        local os_id os_name
+        IFS='|' read -r os_id _ os_name <<< "$(detect_host_os)"
+        os_id="${os_id,,}"
+        case "$os_id" in
+            ubuntu|debian|linuxmint|pop|elementary|kali)
+                run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || { pause_screen; return 1; }
+                run_silent "Installing Docker" "${SUDO_CMD[@]}" apt-get install -y docker.io || { pause_screen; return 1; }
+                ;;
+            fedora)
+                run_silent "Installing Docker-compatible engine" "${SUDO_CMD[@]}" dnf install -y moby-engine || {
+                    status_fail "Docker package unavailable. Install Docker Engine using the official Docker instructions for Fedora."; pause_screen; return 1;
+                }
+                ;;
+            centos|rhel|rocky|almalinux|ol)
+                run_silent "Installing container engine" "${SUDO_CMD[@]}" dnf install -y docker || {
+                    status_fail "Docker package unavailable. Install Docker Engine for ${os_name}, then retry."; pause_screen; return 1;
+                }
+                ;;
+            *) status_fail "Cannot auto-install Docker on ${os_name}; install Docker Engine then retry."; pause_screen; return 1 ;;
+        esac
+    fi
+
+    if ! "${SUDO_CMD[@]}" docker info >/dev/null 2>&1; then
+        if command -v systemctl >/dev/null 2>&1; then
+            "${SUDO_CMD[@]}" systemctl enable --now docker >>"$LOG_FILE" 2>&1 || true
+        fi
+    fi
+    if ! "${SUDO_CMD[@]}" docker info >/dev/null 2>&1; then
+        status_fail "Docker daemon is not running or this environment blocks Docker. See ${LOG_FILE}."
+        pause_screen
+        return 1
+    fi
+
+    if "${SUDO_CMD[@]}" docker container inspect proxmoxve >/dev/null 2>&1; then
+        read -r -p "  Container 'proxmoxve' already exists. Remove and recreate it? [y/N]: " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            "${SUDO_CMD[@]}" docker rm -f proxmoxve >>"$LOG_FILE" 2>&1 || { status_fail "Could not remove existing container"; pause_screen; return 1; }
+        else
+            status_warn "Keeping existing container. Open http://SERVER-IP:3004 if it is running."
+            pause_screen
+            return 0
+        fi
+    fi
+
+    run_silent "Pulling Proxmox container image" "${SUDO_CMD[@]}" docker pull rtedpro/proxmox:8.4.x || { pause_screen; return 1; }
+    run_silent "Creating Proxmox container on host port 3004" "${SUDO_CMD[@]}" docker run -d \
+        --name proxmoxve --hostname pve --restart unless-stopped \
+        -p 3004:8006 --privileged rtedpro/proxmox:8.4.x || { pause_screen; return 1; }
+
+    echo
+    status_ok "Proxmox container started (if supported by this host)"
+    echo -e "  ${DIM}Web UI: http://SERVER-IP:3004${RESET}"
+    echo -e "  ${DIM}Container shell: sudo docker exec -it proxmoxve bash${RESET}"
+    echo -e "  ${DIM}If the UI does not load, inspect: docker logs proxmoxve${RESET}"
+    pause_screen
+}
+
 tools_menu() {
     while true; do
         header
@@ -1126,6 +1284,12 @@ tools_menu() {
         echo
         echo -e "  ${CYAN}03${RESET}  ${WHITE}PufferPanel${RESET}"
         echo -e "      ${DIM}Install PufferPanel on web port 8081${RESET}"
+        echo
+        echo -e "  ${CYAN}04${RESET}  ${WHITE}Proxmox VE (Docker)${RESET}"
+        echo -e "      ${DIM}Experimental container, web port 3004${RESET}"
+        echo
+        echo -e "  ${CYAN}05${RESET}  ${WHITE}OS Systems${RESET}"
+        echo -e "      ${DIM}Ubuntu 22.04 / 20.04 proot rootfs manager${RESET}"
         echo
         echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
         echo
@@ -1159,12 +1323,124 @@ tools_menu() {
                 done
                 ;;
             3|03) install_pufferpanel ;;
+            4|04) install_proxmox_container ;;
+            5|05) os_systems_menu ;;
             0|00) return ;;
             *) status_fail "Invalid selection"; sleep 1 ;;
         esac
     done
 }
 
+
+
+# ============================================================
+# OS SYSTEMS (PROOT ROOT FILESYSTEMS)
+# ============================================================
+
+OS_DIR="${HOME}/.lapio-bhai/os-systems"
+
+install_os_dependencies() {
+    if ! command -v proot >/dev/null 2>&1; then
+        run_silent "Updating package index" "${SUDO_CMD[@]}" apt-get update || return 1
+        run_silent "Installing proot and download tools" "${SUDO_CMD[@]}" apt-get install -y proot wget ca-certificates tar || return 1
+    fi
+    command -v wget >/dev/null 2>&1 || {
+        run_silent "Installing wget" "${SUDO_CMD[@]}" apt-get install -y wget || return 1
+    }
+}
+
+os_system_install_or_start() {
+    local version="$1"
+    local release="$2"
+    local rootfs="${OS_DIR}/ubuntu-${version}"
+    local archive="/tmp/lapio-ubuntu-${version}-$$.tar.gz"
+    local arch url
+
+    case "$(uname -m)" in
+        x86_64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) status_fail "Unsupported host architecture: $(uname -m)"; pause_screen; return 1 ;;
+    esac
+
+    mkdir -p "$OS_DIR"
+    header
+    section_title "OS SYSTEMS • UBUNTU ${version}"
+
+    if [ ! -f "${rootfs}/.lapio-installed" ]; then
+        echo -e "  ${DIM}This creates a user-space Ubuntu root filesystem. Root access inside it is simulated by proot (-0); it does not grant host-root privileges.${RESET}"
+        echo
+        install_os_dependencies || { pause_screen; return 1; }
+
+        url="https://cdimage.ubuntu.com/ubuntu-base/releases/${release}/release/ubuntu-base-${release}-base-${arch}.tar.gz"
+        run_silent "Downloading Ubuntu ${version} (${arch})" wget --tries=5 --timeout=20 -O "$archive" "$url" || {
+            rm -f "$archive"
+            status_fail "Download failed. Check the Ubuntu Base release URL or network."
+            pause_screen
+            return 1
+        }
+
+        mkdir -p "$rootfs"
+        if ! run_silent "Extracting Ubuntu ${version}" tar -xzf "$archive" -C "$rootfs"; then
+            rm -f "$archive"
+            rm -rf "$rootfs"
+            pause_screen
+            return 1
+        fi
+        rm -f "$archive"
+        mkdir -p "${rootfs}/tmp" "${rootfs}/root"
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "${rootfs}/etc/resolv.conf"
+        touch "${rootfs}/.lapio-installed"
+        status_ok "Ubuntu ${version} root filesystem installed"
+    else
+        status_ok "Ubuntu ${version} root filesystem already exists"
+    fi
+
+    echo
+    echo -e "  ${DIM}Login shell: root (proot user-space emulation)${RESET}"
+    echo -e "  ${DIM}Exit Ubuntu by typing:${RESET} ${CYAN}exit${RESET}"
+    echo
+    # -0 provides root-like identity inside the rootfs only, not real host root.
+    proot -0 -r "$rootfs" -w /root \
+        -b /dev -b /proc -b /sys -b /etc/resolv.conf:/etc/resolv.conf \
+        /usr/bin/env -i HOME=/root USER=root LOGNAME=root \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        TERM="${TERM:-xterm-256color}" /bin/bash --login
+    pause_screen
+}
+
+os_systems_menu() {
+    while true; do
+        header
+        section_title "OS SYSTEMS • ROOTFS MANAGER"
+        echo -e "  ${CYAN}01${RESET}  ${WHITE}Ubuntu 22.04 LTS (Jammy)${RESET}"
+        echo -e "      ${DIM}Install or launch Ubuntu 22.04 with proot root-like access${RESET}"
+        echo
+        echo -e "  ${CYAN}02${RESET}  ${WHITE}Ubuntu 20.04 LTS (Focal)${RESET}"
+        echo -e "      ${DIM}Install or launch Ubuntu 20.04 with proot root-like access${RESET}"
+        echo
+        echo -e "  ${CYAN}03${RESET}  ${WHITE}List installed OS systems${RESET}"
+        echo
+        echo -e "  ${CYAN}00${RESET}  ${WHITE}Back${RESET}"
+        echo
+        read -r -p "  Select › " choice
+        case "$choice" in
+            1|01) os_system_install_or_start "22.04" "22.04" ;;
+            2|02) os_system_install_or_start "20.04" "20.04" ;;
+            3|03)
+                header
+                section_title "INSTALLED OS SYSTEMS"
+                [ ! -f "${OS_DIR}/ubuntu-22.04/.lapio-installed" ] || status_ok "Ubuntu 22.04 installed"
+                [ ! -f "${OS_DIR}/ubuntu-20.04/.lapio-installed" ] || status_ok "Ubuntu 20.04 installed"
+                if [ ! -f "${OS_DIR}/ubuntu-22.04/.lapio-installed" ] && [ ! -f "${OS_DIR}/ubuntu-20.04/.lapio-installed" ]; then
+                    status_warn "No OS systems installed yet"
+                fi
+                pause_screen
+                ;;
+            0|00) return ;;
+            *) status_fail "Invalid selection"; sleep 1 ;;
+        esac
+    done
+}
 
 # ============================================================
 # DASHBOARDS
@@ -1332,7 +1608,7 @@ main_menu() {
         echo
 
         line
-        echo -e "  ${DIM}LAPIO BHAI${RESET} ${BRIGHT_CYAN}›${RESET} ${DIM}Ready for command${RESET}"
+        echo -e "  ${DIM}LAPIOPLAYS${RESET} ${BRIGHT_CYAN}›${RESET} ${DIM}Ready for command${RESET}"
         printf -v MAIN_MENU_PROMPT "  %s%sSelect [00-05] › %s" "$BRIGHT_CYAN" "$BOLD" "$RESET"
         read -r -p "$MAIN_MENU_PROMPT" choice
 
@@ -1352,7 +1628,7 @@ main_menu() {
             0|00)
                 clear
                 echo
-                echo -e "  ${BRIGHT_CYAN}${BOLD}LAPIO BHAI${RESET} ${DIM}installer closed.${RESET}"
+                echo -e "  ${BRIGHT_CYAN}${BOLD}LAPIOPLAYS${RESET} ${DIM}installer closed.${RESET}"
                 echo
                 exit 0
                 ;;
@@ -1362,6 +1638,6 @@ main_menu() {
 }
 
 # ---------- Error trap ----------
-trap 'echo; status_fail "Unexpected error. See: $LOG_FILE"; pause_screen' ERR
+trap 'rc=$?; echo "[ERROR] command failed (exit $rc) at ${BASH_SOURCE[0]}:${LINENO}" >> "$LOG_FILE"; status_fail "Command failed at line ${LINENO} (exit ${rc}). See: ${LOG_FILE}"' ERR
 
 main_menu
